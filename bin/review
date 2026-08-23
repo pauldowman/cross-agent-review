@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Ask other AI agents to review this agent's work."""
+
+import argparse
+import sys
+
+KNOWN_AUTHORS = {
+    "claude-opus-5": ("opus", "opus5"),
+    "claude-sonnet-5": ("sonnet", "sonnet5"),
+    "claude-fable-5": ("fable", "fable5"),
+    "gpt-5.6": ("gpt", "gpt5", "codex"),
+    "glm-5.2": ("glm", "glm5"),
+}
+
+EXIT_OK = 0
+EXIT_USAGE = 2
+
+
+def build_alias_index(authors):
+    """Map every canonical name and alias to its canonical name.
+
+    Canonical names are registered first so an alias can never shadow one.
+    Collisions are a bug in the hardcoded table and fail loudly.
+    """
+    index = {canonical: canonical for canonical in authors}
+    for canonical, aliases in authors.items():
+        for alias in aliases:
+            if alias in index:
+                raise ValueError(
+                    f"author alias {alias!r} collides with {index[alias]!r}"
+                )
+            index[alias] = canonical
+    return index
+
+
+AUTHOR_ALIASES = build_alias_index(KNOWN_AUTHORS)
+
+
+def resolve_author(name):
+    """Return the canonical author name for a name or alias, or None."""
+    return AUTHOR_ALIASES.get(name.strip().lower())
+
+
+def format_known_authors():
+    lines = ["Known authors:"]
+    for canonical, aliases in KNOWN_AUTHORS.items():
+        lines.append(f"  {canonical} ({', '.join(aliases)})")
+    return "\n".join(lines)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="review",
+        description="Ask other AI agents to review your work.",
+    )
+    parser.add_argument("author", nargs="?", help="the AI model that produced the work")
+    parser.add_argument(
+        "description",
+        nargs="?",
+        help="what to review, e.g. 'the uncommitted changes' or 'agent-planning/01-review-tool.md'",
+    )
+    parser.add_argument(
+        "--known-authors",
+        action="store_true",
+        help="list recognized author names and exit",
+    )
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.known_authors:
+        print(format_known_authors())
+        return EXIT_OK
+
+    if not args.author or not args.description:
+        parser.error("author and description are both required")
+
+    author = resolve_author(args.author)
+    if author is None:
+        print(
+            f"review: unknown author {args.author!r}\n"
+            "Run `review --known-authors` to see the list.",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+
+    print(f"review: no reviewers configured for {author} yet")
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())
