@@ -3,6 +3,7 @@
 
 FAKE_HARNESS_MODE selects the behavior:
   echo      write FAKE_HARNESS_OUTPUT to stdout and exit 0 (the default)
+  echo_both write FAKE_HARNESS_OUTPUT to stdout and FAKE_HARNESS_STDERR to stderr
   empty     write nothing and exit 0
   nonzero   write to stderr and exit 3
   env       write the inherited REVIEW_ACTIVE value to stdout
@@ -34,6 +35,9 @@ def sleep_with_grandchild(detached):
 def main():
     if MODE == "echo":
         sys.stdout.write(os.environ.get("FAKE_HARNESS_OUTPUT", DEFAULT_OUTPUT))
+    elif MODE == "echo_both":
+        sys.stdout.write(os.environ.get("FAKE_HARNESS_OUTPUT", DEFAULT_OUTPUT))
+        sys.stderr.write(os.environ.get("FAKE_HARNESS_STDERR", ""))
     elif MODE == "empty":
         pass
     elif MODE == "nonzero":

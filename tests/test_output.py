@@ -2,11 +2,11 @@ import json
 import unittest
 
 import review_module
-from test_spawn import LONG_ENOUGH_REVIEW, SpawnTestCase, run_main
+from test_spawn import GRADED_REVIEW, LONG_ENOUGH_REVIEW, SpawnTestCase, run_main
 
 
 def claude_envelope(**fields):
-    return json.dumps({"result": LONG_ENOUGH_REVIEW, "is_error": False, **fields})
+    return json.dumps({"result": GRADED_REVIEW, "is_error": False, **fields})
 
 
 class ExtractClaudeTest(unittest.TestCase):
@@ -15,7 +15,7 @@ class ExtractClaudeTest(unittest.TestCase):
 
     def test_result_field_is_the_review(self):
         extracted = self.review.extract_claude(claude_envelope())
-        self.assertEqual(extracted.text, LONG_ENOUGH_REVIEW)
+        self.assertEqual(extracted.text, GRADED_REVIEW)
         self.assertIsNone(extracted.error)
 
     def test_cost_is_captured(self):
@@ -135,7 +135,7 @@ class ClassifiedRunTest(SpawnTestCase):
         run = self.review.run_reviewer("fake", "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_HARNESS_ERROR)
         self.assertEqual(run.text, "")
-        self.assertIn("credit balance too low", run.stderr)
+        self.assertIn("credit balance too low", run.notice)
 
     def test_cost_reaches_the_run(self):
         self.use_claude_family()

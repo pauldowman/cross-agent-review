@@ -13,6 +13,7 @@ from unittest import mock
 import review_module
 
 LONG_ENOUGH_REVIEW = "this review body is long enough to look real"
+GRADED_REVIEW = f"<grade>B</grade>\n<review>\n{LONG_ENOUGH_REVIEW}\n</review>"
 
 FIXTURE = pathlib.Path(__file__).resolve().parent / "fixtures" / "fake_harness.py"
 
@@ -174,7 +175,7 @@ class DryRunTest(SpawnTestCase):
 
 class RunReviewerTest(SpawnTestCase):
     def test_harness_output_is_returned(self):
-        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=LONG_ENOUGH_REVIEW)
+        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=GRADED_REVIEW)
         run = self.review.run_reviewer("fake", "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_OK)
         self.assertEqual(run.text, LONG_ENOUGH_REVIEW)
@@ -196,7 +197,7 @@ class RunReviewerTest(SpawnTestCase):
         )
         run = self.review.run_reviewer("fake", "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_HARNESS_MISSING)
-        self.assertIn("/nonexistent/harness", run.stderr)
+        self.assertIn("/nonexistent/harness", run.notice)
 
     def test_a_harness_that_is_not_executable_is_reported_not_raised(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -217,7 +218,7 @@ class RunReviewerTest(SpawnTestCase):
             run = self.review.run_reviewer("fake", "prompt", timeout=1)
 
             self.assertEqual(run.status, self.review.STATUS_TIMEOUT)
-            self.assertIn("timed out after 1s", run.stderr)
+            self.assertIn("timed out after 1s", run.notice)
             grandchild = wait_for_pidfile(pidfile)
             self.assertTrue(
                 wait_for_exit(grandchild),
@@ -259,7 +260,7 @@ class RunReviewerTest(SpawnTestCase):
 
 class MainOutputTest(SpawnTestCase):
     def test_review_text_is_printed_to_stdout(self):
-        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=LONG_ENOUGH_REVIEW)
+        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=GRADED_REVIEW)
         code, out, _ = run_main(self.review, "gpt-5.6", "the branch")
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn(LONG_ENOUGH_REVIEW, out)
