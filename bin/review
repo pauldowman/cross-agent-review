@@ -2,6 +2,7 @@
 """Ask other AI agents to review this agent's work."""
 
 import argparse
+import concurrent.futures
 import contextlib
 import datetime
 import json
@@ -14,7 +15,9 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
+import traceback
 from collections import namedtuple
 
 KNOWN_AUTHORS = {
@@ -29,26 +32,33 @@ PROMPT_PLACEHOLDER = "<prompt>"
 
 Harness = namedtuple("Harness", "family argv")
 
-HARNESS = {
-    "claude-opus-5": Harness(
+
+def claude_harness(model):
+    return Harness(
         "claude",
         (
             "claude",
             "-p",
             PROMPT_PLACEHOLDER,
             "--model",
-            "claude-opus-5",
+            model,
             "--permission-mode",
             "plan",
             "--output-format",
             "json",
         ),
-    ),
+    )
+
+
+# Keyed by model so an entry can never name a different model than its key.
+HARNESS = {
+    model: claude_harness(model)
+    for model in ("claude-opus-5", "claude-sonnet-5")
 }
 
 REVIEWERS = {
-    "gpt-5.6": ("claude-opus-5",),
-    "glm-5.2": ("claude-opus-5",),
+    "gpt-5.6": ("claude-opus-5", "claude-sonnet-5"),
+    "glm-5.2": ("claude-opus-5", "claude-sonnet-5"),
 }
 
 EXIT_OK = 0
@@ -129,6 +139,46 @@ CREATE TABLE IF NOT EXISTS reviews (
 
 class ConfigurationError(Exception):
     """The environment asks for something this tool cannot honor."""
+
+
+LIVE_PROCESSES = set()
+LIVE_PROCESSES_LOCK = threading.Lock()
+
+
+def track(process):
+    with LIVE_PROCESSES_LOCK:
+        LIVE_PROCESSES.add(process)
+
+
+def untrack(process):
+    with LIVE_PROCESSES_LOCK:
+        LIVE_PROCESSES.discard(process)
+
+
+def kill_live_processes():
+    """Kill every reviewer still running, returning how many there were."""
+    with LIVE_PROCESSES_LOCK:
+        processes = list(LIVE_PROCESSES)
+    for process in processes:
+        kill_process_group(process)
+    return len(processes)
+
+
+def terminate_everything(signum, _frame):
+    """Kill the reviewers and leave immediately on an interrupt.
+
+    Two things would otherwise hang: the thread pool's shutdown waits for
+    workers parked in communicate(), and each reviewer leads its own session
+    so it never receives a signal sent to this process's group. Exiting
+    through os._exit skips the pool's atexit join, which would wait too.
+    """
+    kill_live_processes()
+    os._exit(128 + signum)
+
+
+def install_signal_handlers():
+    for received in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(received, terminate_everything)
 
 
 def build_alias_index(authors):
@@ -365,6 +415,7 @@ def run_reviewer(reviewer, prompt, timeout=None):
     except OSError as error:
         return finished(STATUS_HARNESS_MISSING, "", f"{argv[0]}: {error.strerror}")
 
+    track(process)
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -377,6 +428,8 @@ def run_reviewer(reviewer, prompt, timeout=None):
             join_notices(f"timed out after {timeout}s", partial),
             stderr,
         )
+    finally:
+        untrack(process)
 
     extracted = EXTRACTORS[family](stdout)
     status, notice = classify(extracted, process.returncode)
@@ -532,14 +585,44 @@ def review_all(reviewers, prompt, timeout, invocation):
     connection = open_database()
     delivered = False
     try:
-        for reviewer in reviewers:
-            run = run_reviewer(reviewer, prompt, timeout=timeout)
-            record_run(connection, invocation, run)
-            delivered = deliver(run, invocation.run_id) or delivered
+        with concurrent.futures.ThreadPoolExecutor(len(reviewers)) as pool:
+            pending = {
+                pool.submit(run_reviewer, reviewer, prompt, timeout): reviewer
+                for reviewer in reviewers
+            }
+            for future in concurrent.futures.as_completed(pending):
+                run = collect(future, pending[future])
+                record_run(connection, invocation, run)
+                delivered = deliver(run, invocation.run_id) or delivered
     finally:
         if connection is not None:
             connection.close()
     return delivered
+
+
+def collect(future, reviewer):
+    """Take one reviewer's result, turning a crash into a failed run.
+
+    A bug while running one reviewer must not cost the author the reviews
+    the others produced, so this deliberately catches everything -- but it
+    prints the traceback, because a swallowed exception with no location is
+    the kind of failure that stays invisible for weeks, and it returns a run
+    so the ledger still has a row for every reviewer that was asked.
+    """
+    try:
+        return future.result()
+    except Exception as error:
+        print(f"review: {reviewer} could not be run: {error!r}", file=sys.stderr)
+        traceback.print_exc()
+        return ReviewerRun(
+            reviewer=reviewer,
+            family="unknown",
+            status=STATUS_HARNESS_ERROR,
+            text="",
+            notice=f"the review tool failed to run this reviewer: {error!r}",
+            stderr="",
+            duration_s=0.0,
+        )
 
 
 def database_path():
@@ -661,7 +744,7 @@ def deliver(run, nonce):
 
     if run.notice:
         print(f"review: {run.notice}", file=sys.stderr)
-    print(format_review(run, nonce))
+    print(format_review(run, nonce), flush=True)
     return True
 
 
@@ -672,10 +755,12 @@ def report_failure(run):
     be a second, unlabelled channel of reviewer-controlled text into the
     author's context; as diagnostics for a failure it is what you want.
     """
+    sys.stdout.flush()
     print(f"review: {run.reviewer} failed ({run.status})", file=sys.stderr)
     for line in join_notices(run.notice, run.stderr).splitlines():
         print(f"review: {line}", file=sys.stderr)
 
 
 if __name__ == "__main__":
+    install_signal_handlers()
     sys.exit(main())
