@@ -15,6 +15,7 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -29,6 +30,7 @@ KNOWN_AUTHORS = {
 }
 
 PROMPT_PLACEHOLDER = "<prompt>"
+OUTPUT_PLACEHOLDER = "<output-file>"
 
 Harness = namedtuple("Harness", "family argv")
 
@@ -246,15 +248,30 @@ If you cannot find what the description points at, reply with <grade>NA</grade> 
 and use the review to say what you looked for and where."""
 
 
-def resolve_argv(reviewer, prompt):
+def resolve_argv(reviewer, prompt, output_path=None):
+    """Fill a harness template in, checking each placeholder appears once.
+
+    Some harnesses write their reply to a file instead of stdout, so a
+    template may also carry an output placeholder for the path allocated to
+    that run.
+    """
     template = HARNESS[reviewer].argv
-    placeholders = [part for part in template if part == PROMPT_PLACEHOLDER]
-    if len(placeholders) != 1:
-        raise ValueError(
-            f"harness template for {reviewer!r} needs exactly one "
-            f"{PROMPT_PLACEHOLDER}, found {len(placeholders)}"
-        )
-    return [prompt if part == PROMPT_PLACEHOLDER else part for part in template]
+    substitutions = {PROMPT_PLACEHOLDER: prompt}
+    if output_path is not None:
+        substitutions[OUTPUT_PLACEHOLDER] = str(output_path)
+
+    for placeholder, expected in (
+        (PROMPT_PLACEHOLDER, 1),
+        (OUTPUT_PLACEHOLDER, 1 if output_path is not None else 0),
+    ):
+        found = template.count(placeholder)
+        if found != expected:
+            raise ValueError(
+                f"harness template for {reviewer!r} needs {expected} "
+                f"{placeholder}, found {found}"
+            )
+
+    return [substitutions.get(part, part) for part in template]
 
 
 def reviewer_timeout():
@@ -279,7 +296,7 @@ def reviewer_timeout():
     return seconds
 
 
-def extract_claude(stdout):
+def extract_claude(stdout, output_path=None):
     """Pull the final message out of `claude -p --output-format json`.
 
     A populated `result` is not proof of success: when `is_error` is set it
@@ -302,7 +319,7 @@ def extract_claude(stdout):
     return Extracted(text, cost, None)
 
 
-def extract_plain(stdout):
+def extract_plain(stdout, output_path=None):
     return Extracted(stdout, None, None)
 
 
@@ -380,9 +397,32 @@ def child_environment():
 
 
 def run_reviewer(reviewer, prompt, timeout=None):
+    """Run one reviewer, cleaning up any output file it was given."""
+    output_path = allocate_output_file(reviewer)
+    try:
+        return run_harness(reviewer, prompt, timeout, output_path)
+    finally:
+        if output_path is not None:
+            output_path.unlink(missing_ok=True)
+
+
+def allocate_output_file(reviewer):
+    """Give a harness that writes to a file a path of its own.
+
+    Every run gets a private one: reviewers run concurrently, so a shared
+    path would let one reviewer overwrite another's reply.
+    """
+    if OUTPUT_PLACEHOLDER not in HARNESS[reviewer].argv:
+        return None
+    handle, name = tempfile.mkstemp(prefix="review-", suffix=".txt")
+    os.close(handle)
+    return pathlib.Path(name)
+
+
+def run_harness(reviewer, prompt, timeout, output_path):
     """Run one reviewer to completion, killing its whole process group on timeout."""
     family = HARNESS[reviewer].family
-    argv = resolve_argv(reviewer, prompt)
+    argv = resolve_argv(reviewer, prompt, output_path)
     timeout = reviewer_timeout() if timeout is None else timeout
     started = time.monotonic()
 
@@ -431,7 +471,7 @@ def run_reviewer(reviewer, prompt, timeout=None):
     finally:
         untrack(process)
 
-    extracted = EXTRACTORS[family](stdout)
+    extracted = EXTRACTORS[family](stdout, output_path)
     status, notice = classify(extracted, process.returncode)
     grade, text = None, ""
     if status == STATUS_OK:
