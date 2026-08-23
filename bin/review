@@ -486,14 +486,19 @@ def main(argv=None):
         return EXIT_OK
 
     run = run_reviewer(reviewers[0], prompt, timeout=timeout)
+    return EXIT_OK if deliver(run, secrets.token_hex(4)) else EXIT_ALL_FAILED
+
+
+def deliver(run, nonce):
+    """Emit one finished reviewer run, reporting whether it produced a review."""
     if run.status not in DELIVERABLE_STATUSES:
         report_failure(run)
-        return EXIT_ALL_FAILED
+        return False
 
     if run.notice:
         print(f"review: {run.notice}", file=sys.stderr)
-    print(format_review(run, secrets.token_hex(4)))
-    return EXIT_OK
+    print(format_review(run, nonce))
+    return True
 
 
 def report_failure(run):
