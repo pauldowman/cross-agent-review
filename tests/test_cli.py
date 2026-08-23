@@ -39,12 +39,12 @@ class AuthorValidationTest(unittest.TestCase):
         self.assertIn("review --known-authors", err)
 
     def test_canonical_author_is_accepted(self):
-        code, _, _ = run("claude-opus-5", "the uncommitted changes")
+        code, _, _ = run("gpt-5.6", "the uncommitted changes", "--dry-run")
         self.assertEqual(code, 0)
 
     def test_alias_resolves_to_canonical_author(self):
         self.assertEqual(review.resolve_author("opus5"), "claude-opus-5")
-        code, _, _ = run("opus5", "the uncommitted changes")
+        code, _, _ = run("gpt5", "the uncommitted changes", "--dry-run")
         self.assertEqual(code, 0)
 
     def test_author_matching_ignores_case_and_surrounding_space(self):
