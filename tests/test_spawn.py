@@ -12,6 +12,8 @@ from unittest import mock
 
 import review_module
 
+LONG_ENOUGH_REVIEW = "this review body is long enough to look real"
+
 FIXTURE = pathlib.Path(__file__).resolve().parent / "fixtures" / "fake_harness.py"
 
 
@@ -54,9 +56,9 @@ class SpawnTestCase(unittest.TestCase):
         self.review = review_module.load()
         self.use_fake_harness()
 
-    def use_fake_harness(self, argv=None):
+    def use_fake_harness(self, argv=None, family="plain"):
         self.review.HARNESS["fake"] = self.review.Harness(
-            "fake",
+            family,
             argv or (sys.executable, str(FIXTURE), self.review.PROMPT_PLACEHOLDER),
         )
         self.review.REVIEWERS["gpt-5.6"] = ("fake",)
@@ -123,6 +125,11 @@ class ConfiguredTableTest(unittest.TestCase):
         for reviewer in self.review.HARNESS:
             self.assertIn("PROMPT", self.review.resolve_argv(reviewer, "PROMPT"))
 
+    def test_every_harness_family_has_an_extractor(self):
+        for reviewer, harness in self.review.HARNESS.items():
+            with self.subTest(reviewer=reviewer):
+                self.assertIn(harness.family, self.review.EXTRACTORS)
+
 
 class TimeoutConfigurationTest(SpawnTestCase):
     def test_unset_uses_the_default(self):
@@ -167,10 +174,10 @@ class DryRunTest(SpawnTestCase):
 
 class RunReviewerTest(SpawnTestCase):
     def test_harness_output_is_returned(self):
-        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT="the review body")
+        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=LONG_ENOUGH_REVIEW)
         run = self.review.run_reviewer("fake", "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_OK)
-        self.assertEqual(run.text, "the review body")
+        self.assertEqual(run.text, LONG_ENOUGH_REVIEW)
         self.assertEqual(run.returncode, 0)
 
     def test_exit_code_is_captured(self):
@@ -181,7 +188,7 @@ class RunReviewerTest(SpawnTestCase):
     def test_harness_family_is_recorded(self):
         self.set_env(FAKE_HARNESS_MODE="echo")
         run = self.review.run_reviewer("fake", "prompt", timeout=30)
-        self.assertEqual(run.family, "fake")
+        self.assertEqual(run.family, "plain")
 
     def test_missing_harness_binary_is_reported_not_raised(self):
         self.use_fake_harness(
@@ -247,15 +254,15 @@ class RunReviewerTest(SpawnTestCase):
     def test_child_environment_marks_a_review_as_active(self):
         self.set_env(FAKE_HARNESS_MODE="env")
         run = self.review.run_reviewer("fake", "prompt", timeout=30)
-        self.assertEqual(run.text.strip(), "1")
+        self.assertIn("REVIEW_ACTIVE=1", run.text)
 
 
 class MainOutputTest(SpawnTestCase):
     def test_review_text_is_printed_to_stdout(self):
-        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT="the review body")
+        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=LONG_ENOUGH_REVIEW)
         code, out, _ = run_main(self.review, "gpt-5.6", "the branch")
         self.assertEqual(code, self.review.EXIT_OK)
-        self.assertIn("the review body", out)
+        self.assertIn(LONG_ENOUGH_REVIEW, out)
 
     def test_a_failed_reviewer_reports_on_stderr_and_exits_all_failed(self):
         self.use_fake_harness(

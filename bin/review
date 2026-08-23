@@ -3,6 +3,7 @@
 
 import argparse
 import contextlib
+import json
 import os
 import shlex
 import signal
@@ -53,6 +54,15 @@ EXIT_RECURSION = 4
 STATUS_OK = "ok"
 STATUS_TIMEOUT = "timeout"
 STATUS_HARNESS_MISSING = "harness_missing"
+STATUS_HARNESS_ERROR = "harness_error"
+STATUS_NONZERO_EXIT = "nonzero_exit"
+STATUS_EMPTY_OUTPUT = "empty_output"
+
+# Shorter than any real review, and long enough to catch the failure mode where
+# a harness exits 0 having produced nothing usable. Once the grade contract is
+# in place a well-formed response carries ~30 characters of tags on its own, so
+# this check must stay on the pre-parse text to keep catching that case.
+MIN_REVIEW_CHARS = 20
 
 ACTIVE_ENV_VAR = "REVIEW_ACTIVE"
 TIMEOUT_ENV_VAR = "REVIEW_TIMEOUT"
@@ -61,9 +71,11 @@ DRAIN_TIMEOUT_SECONDS = 5
 
 ReviewerRun = namedtuple(
     "ReviewerRun",
-    "reviewer family status text stderr duration_s returncode",
-    defaults=(None,),
+    "reviewer family status text stderr duration_s returncode cost_usd",
+    defaults=(None, None),
 )
+
+Extracted = namedtuple("Extracted", "text cost_usd error")
 
 
 class ConfigurationError(Exception):
@@ -150,6 +162,63 @@ def reviewer_timeout():
     return seconds
 
 
+def extract_claude(stdout):
+    """Pull the final message out of `claude -p --output-format json`.
+
+    A populated `result` is not proof of success: when `is_error` is set it
+    carries the error string instead of a review.
+    """
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return Extracted("", None, f"claude did not return JSON: {stdout[:200]!r}")
+    if not isinstance(payload, dict):
+        return Extracted("", None, f"claude returned unexpected JSON: {stdout[:200]!r}")
+
+    cost = payload.get("total_cost_usd")
+    text = payload.get("result") or ""
+    if not isinstance(text, str):
+        return Extracted("", cost, f"claude returned a {type(text).__name__} result")
+    if payload.get("is_error"):
+        subtype = payload.get("subtype") or "unknown"
+        return Extracted("", cost, f"claude reported an error ({subtype}): {text}")
+    return Extracted(text, cost, None)
+
+
+def extract_plain(stdout):
+    return Extracted(stdout, None, None)
+
+
+EXTRACTORS = {
+    "claude": extract_claude,
+    "plain": extract_plain,
+}
+
+
+def join_notices(*parts):
+    return "\n".join(part for part in parts if part)
+
+
+def classify(extracted, returncode):
+    """Decide what a finished harness actually produced.
+
+    The exit code is checked first so that `harness_error` means exactly what
+    it says: the harness ran to completion and reported its own failure. A
+    crashed harness also fails to produce parseable output, and calling that
+    a self-reported error would hide the more specific diagnosis.
+    """
+    if returncode != 0:
+        return STATUS_NONZERO_EXIT, join_notices(
+            f"harness exited {returncode}", extracted.error
+        )
+    if extracted.error:
+        return STATUS_HARNESS_ERROR, extracted.error
+    body = extracted.text.strip()
+    if len(body) < MIN_REVIEW_CHARS:
+        return STATUS_EMPTY_OUTPUT, f"harness produced only {len(body)} characters"
+    return STATUS_OK, ""
+
+
 def child_environment():
     environment = os.environ.copy()
     environment[ACTIVE_ENV_VAR] = "1"
@@ -163,7 +232,7 @@ def run_reviewer(reviewer, prompt, timeout=None):
     timeout = reviewer_timeout() if timeout is None else timeout
     started = time.monotonic()
 
-    def finished(status, text, stderr, returncode=None):
+    def finished(status, text, stderr, returncode=None, cost_usd=None):
         return ReviewerRun(
             reviewer=reviewer,
             family=family,
@@ -172,6 +241,7 @@ def run_reviewer(reviewer, prompt, timeout=None):
             stderr=stderr,
             duration_s=time.monotonic() - started,
             returncode=returncode,
+            cost_usd=cost_usd,
         )
 
     try:
@@ -192,12 +262,22 @@ def run_reviewer(reviewer, prompt, timeout=None):
     except subprocess.TimeoutExpired:
         kill_process_group(process)
         stdout, stderr = drain(process)
-        notice = f"timed out after {timeout}s"
+        partial = f"discarded {len(stdout)} characters of partial output" if stdout else ""
         return finished(
-            STATUS_TIMEOUT, stdout, f"{notice}\n{stderr}" if stderr else notice
+            STATUS_TIMEOUT,
+            "",
+            join_notices(f"timed out after {timeout}s", partial, stderr),
         )
 
-    return finished(STATUS_OK, stdout, stderr, process.returncode)
+    extracted = EXTRACTORS[family](stdout)
+    status, notice = classify(extracted, process.returncode)
+    return finished(
+        status,
+        extracted.text if status == STATUS_OK else "",
+        join_notices(notice, stderr),
+        process.returncode,
+        extracted.cost_usd,
+    )
 
 
 def drain(process):

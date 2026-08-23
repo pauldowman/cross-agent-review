@@ -19,6 +19,8 @@ import time
 
 MODE = os.environ.get("FAKE_HARNESS_MODE", "echo")
 
+DEFAULT_OUTPUT = "a review body long enough to classify as real"
+
 
 def sleep_with_grandchild(detached):
     grandchild = subprocess.Popen(["sleep", "300"], start_new_session=detached)
@@ -31,14 +33,15 @@ def sleep_with_grandchild(detached):
 
 def main():
     if MODE == "echo":
-        sys.stdout.write(os.environ.get("FAKE_HARNESS_OUTPUT", "a review"))
+        sys.stdout.write(os.environ.get("FAKE_HARNESS_OUTPUT", DEFAULT_OUTPUT))
     elif MODE == "empty":
         pass
     elif MODE == "nonzero":
         sys.stderr.write("harness failed")
         return 3
     elif MODE == "env":
-        sys.stdout.write(os.environ.get("REVIEW_ACTIVE", "<unset>"))
+        inherited = os.environ.get("REVIEW_ACTIVE", "<unset>")
+        sys.stdout.write(f"REVIEW_ACTIVE={inherited} as seen by the fake harness")
     elif MODE == "hang":
         sleep_with_grandchild(detached=False)
     elif MODE == "detached":
