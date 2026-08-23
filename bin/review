@@ -516,15 +516,30 @@ def main(argv=None):
         return EXIT_OK
 
     invocation = describe_invocation(author, args.description)
+    if review_all(reviewers, prompt, timeout, invocation):
+        return EXIT_OK
+
+    print("review: no reviews were produced", file=sys.stderr)
+    return EXIT_ALL_FAILED
+
+
+def review_all(reviewers, prompt, timeout, invocation):
+    """Run, record, and deliver each reviewer. True if any produced a review.
+
+    Recording and delivery happen per reviewer as it finishes, so a run cut
+    short by the caller still keeps whatever completed.
+    """
     connection = open_database()
+    delivered = False
     try:
-        run = run_reviewer(reviewers[0], prompt, timeout=timeout)
-        record_run(connection, invocation, run)
+        for reviewer in reviewers:
+            run = run_reviewer(reviewer, prompt, timeout=timeout)
+            record_run(connection, invocation, run)
+            delivered = deliver(run, invocation.run_id) or delivered
     finally:
         if connection is not None:
             connection.close()
-
-    return EXIT_OK if deliver(run, invocation.run_id) else EXIT_ALL_FAILED
+    return delivered
 
 
 def database_path():
