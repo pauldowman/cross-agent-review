@@ -3,12 +3,15 @@
 
 import argparse
 import contextlib
+import datetime
 import json
 import os
+import pathlib
 import re
 import secrets
 import shlex
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -85,6 +88,9 @@ MIN_REVIEW_CHARS = 20
 
 ACTIVE_ENV_VAR = "REVIEW_ACTIVE"
 TIMEOUT_ENV_VAR = "REVIEW_TIMEOUT"
+DB_ENV_VAR = "REVIEW_DB"
+SCHEMA_VERSION = 1
+BUSY_TIMEOUT_SECONDS = 5
 DEFAULT_TIMEOUT_SECONDS = 240
 DRAIN_TIMEOUT_SECONDS = 5
 
@@ -95,6 +101,30 @@ ReviewerRun = namedtuple(
 )
 
 Extracted = namedtuple("Extracted", "text cost_usd error")
+
+Invocation = namedtuple(
+    "Invocation", "run_id ts author description cwd branch git_sha"
+)
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    author TEXT NOT NULL,
+    reviewer TEXT NOT NULL,
+    harness TEXT NOT NULL,
+    description TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    branch TEXT,
+    git_sha TEXT,
+    grade TEXT,
+    review_text TEXT,
+    duration_s REAL,
+    status TEXT NOT NULL,
+    cost_usd REAL
+)
+"""
 
 
 class ConfigurationError(Exception):
@@ -485,13 +515,132 @@ def main(argv=None):
             print(f"{reviewer}: {shlex.join(resolve_argv(reviewer, prompt))}")
         return EXIT_OK
 
-    run = run_reviewer(reviewers[0], prompt, timeout=timeout)
-    return EXIT_OK if deliver(run, secrets.token_hex(4)) else EXIT_ALL_FAILED
+    invocation = describe_invocation(author, args.description)
+    connection = open_database()
+    try:
+        run = run_reviewer(reviewers[0], prompt, timeout=timeout)
+        record_run(connection, invocation, run)
+    finally:
+        if connection is not None:
+            connection.close()
+
+    return EXIT_OK if deliver(run, invocation.run_id) else EXIT_ALL_FAILED
+
+
+def database_path():
+    override = os.environ.get(DB_ENV_VAR)
+    if override:
+        return pathlib.Path(override)
+    data_home = os.environ.get("XDG_DATA_HOME") or pathlib.Path.home() / ".local/share"
+    return pathlib.Path(data_home) / "review" / "reviews.db"
+
+
+def open_database(path=None):
+    """Open the ledger, or return None if it cannot be opened.
+
+    Record keeping must never cost the author a review they already paid
+    for, so every failure here degrades to a warning rather than an error.
+    """
+    path = database_path() if path is None else pathlib.Path(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(path, timeout=BUSY_TIMEOUT_SECONDS)
+        connection.execute("PRAGMA journal_mode=WAL")
+        prepare_schema(connection)
+        return connection
+    except (sqlite3.Error, OSError) as error:
+        print(f"review: not recording to {path}: {error}", file=sys.stderr)
+        return None
+
+
+def prepare_schema(connection):
+    """Create the schema on a new database; refuse an unfamiliar one.
+
+    The stamp describes the file, not the code that opened it, so it is only
+    written once. Overwriting it on every open would let an old binary
+    silently relabel a newer database.
+    """
+    version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if version == 0:
+        connection.execute(SCHEMA)
+        connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+    elif version != SCHEMA_VERSION:
+        raise sqlite3.DatabaseError(
+            f"schema version {version} is not the {SCHEMA_VERSION} this tool writes"
+        )
+
+
+def git_output(*args):
+    """Run a git command, returning None if it fails for any reason.
+
+    That covers a missing binary, no repository, no commits yet, and a
+    detached HEAD -- all of which should record as absent, not as a guess.
+    """
+    try:
+        result = subprocess.run(
+            ["git", *args], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def describe_invocation(author, description):
+    return Invocation(
+        run_id=secrets.token_hex(8),
+        ts=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        author=author,
+        description=description,
+        cwd=os.getcwd(),
+        branch=git_output("symbolic-ref", "--short", "HEAD"),
+        git_sha=git_output("rev-parse", "HEAD"),
+    )
+
+
+def record_run(connection, invocation, run):
+    """Persist one reviewer run, successful or not.
+
+    Reports whether it was recorded. A write failure is worth a warning but
+    never worth withholding the review it describes.
+    """
+    if connection is None:
+        return False
+    try:
+        insert_run(connection, invocation, run)
+    except (sqlite3.Error, OSError) as error:
+        print(f"review: could not record {run.reviewer}: {error}", file=sys.stderr)
+        return False
+    return True
+
+
+def insert_run(connection, invocation, run):
+    connection.execute(
+        "INSERT INTO reviews (run_id, ts, author, reviewer, harness, description,"
+        " cwd, branch, git_sha, grade, review_text, duration_s, status, cost_usd)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            invocation.run_id,
+            invocation.ts,
+            invocation.author,
+            run.reviewer,
+            run.family,
+            invocation.description,
+            invocation.cwd,
+            invocation.branch,
+            invocation.git_sha,
+            run.grade,
+            run.text or None,
+            run.duration_s,
+            run.status,
+            run.cost_usd,
+        ),
+    )
+    connection.commit()
 
 
 def deliver(run, nonce):
     """Emit one finished reviewer run, reporting whether it produced a review."""
-    if run.status not in DELIVERABLE_STATUSES:
+    if run.status not in DELIVERABLE_STATUSES or not run.text.strip():
         report_failure(run)
         return False
 

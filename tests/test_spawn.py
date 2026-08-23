@@ -56,6 +56,14 @@ class SpawnTestCase(unittest.TestCase):
     def setUp(self):
         self.review = review_module.load()
         self.use_fake_harness()
+        self.use_temporary_database()
+
+    def use_temporary_database(self):
+        """Keep every test off the real ~/.local/share/review/reviews.db."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.db_path = pathlib.Path(directory.name) / "reviews.db"
+        self.set_env(REVIEW_DB=str(self.db_path))
 
     def use_fake_harness(self, argv=None, family="plain"):
         self.review.HARNESS["fake"] = self.review.Harness(
