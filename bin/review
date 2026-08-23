@@ -52,15 +52,59 @@ def claude_harness(model):
     )
 
 
-# Keyed by model so an entry can never name a different model than its key.
+def codex_harness(model):
+    """codex writes its final message to the file named by -o.
+
+    Its stdout carries a banner and a token-usage footer, so the file is the
+    only clean source for the reply.
+    """
+    return Harness(
+        "codex",
+        (
+            "codex",
+            "exec",
+            "-s",
+            "read-only",
+            "-m",
+            model,
+            "-c",
+            f"model_reasoning_effort={CODEX_REASONING_EFFORT}",
+            "-o",
+            OUTPUT_PLACEHOLDER,
+            "--skip-git-repo-check",
+            PROMPT_PLACEHOLDER,
+        ),
+    )
+
+
+CLAUDE_MODELS = ("claude-opus-5", "claude-sonnet-5")
+CODEX_MODEL = "gpt-5.6-sol"
+# Pinned for the same reason as the model: the user's config default is
+# xhigh, which changes latency and cost invisibly and risks timing out.
+CODEX_REASONING_EFFORT = "medium"
+
+# Each key names the model it runs, so an entry cannot drift from its key.
 HARNESS = {
-    model: claude_harness(model)
-    for model in ("claude-opus-5", "claude-sonnet-5")
+    **{model: claude_harness(model) for model in CLAUDE_MODELS},
+    f"codex-{CODEX_MODEL}": codex_harness(CODEX_MODEL),
 }
 
+AUTHOR_FAMILY = {
+    "claude-opus-5": "claude",
+    "claude-sonnet-5": "claude",
+    "claude-fable-5": "claude",
+    "gpt-5.6": "codex",
+    "glm-5.2": "opencode",
+}
+
+# Who reviews whom. Nobody reviews themselves, and every author gets at
+# least one reviewer running under a different harness.
 REVIEWERS = {
+    "claude-opus-5": (f"codex-{CODEX_MODEL}", "claude-sonnet-5"),
+    "claude-sonnet-5": (f"codex-{CODEX_MODEL}", "claude-opus-5"),
+    "claude-fable-5": (f"codex-{CODEX_MODEL}", "claude-opus-5"),
     "gpt-5.6": ("claude-opus-5", "claude-sonnet-5"),
-    "glm-5.2": ("claude-opus-5", "claude-sonnet-5"),
+    "glm-5.2": (f"codex-{CODEX_MODEL}", "claude-opus-5"),
 }
 
 EXIT_OK = 0
@@ -323,8 +367,27 @@ def extract_plain(stdout, output_path=None):
     return Extracted(stdout, None, None)
 
 
+def extract_codex(stdout, output_path):
+    """Read codex's reply from the file it was told to write.
+
+    Nothing is read on the timeout path, where the file would be partial:
+    run_harness returns before extraction when a reviewer is killed.
+    """
+    if output_path is None:
+        return Extracted("", None, "codex was not given an output file")
+    try:
+        # errors="replace" because a harness killed mid-write leaves a partial
+        # multibyte sequence, and UnicodeDecodeError is a ValueError -- it
+        # would escape this handler and lose a review that was paid for.
+        text = output_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        return Extracted("", None, f"codex wrote no output file: {error}")
+    return Extracted(text, None, None)
+
+
 EXTRACTORS = {
     "claude": extract_claude,
+    "codex": extract_codex,
     "plain": extract_plain,
 }
 
@@ -406,13 +469,17 @@ def run_reviewer(reviewer, prompt, timeout=None):
             output_path.unlink(missing_ok=True)
 
 
+def needs_output_file(reviewer):
+    return OUTPUT_PLACEHOLDER in HARNESS[reviewer].argv
+
+
 def allocate_output_file(reviewer):
     """Give a harness that writes to a file a path of its own.
 
     Every run gets a private one: reviewers run concurrently, so a shared
     path would let one reviewer overwrite another's reply.
     """
-    if OUTPUT_PLACEHOLDER not in HARNESS[reviewer].argv:
+    if not needs_output_file(reviewer):
         return None
     handle, name = tempfile.mkstemp(prefix="review-", suffix=".txt")
     os.close(handle)
@@ -605,7 +672,9 @@ def main(argv=None):
 
     if args.dry_run:
         for reviewer in reviewers:
-            print(f"{reviewer}: {shlex.join(resolve_argv(reviewer, prompt))}")
+            shown = OUTPUT_PLACEHOLDER if needs_output_file(reviewer) else None
+            argv = resolve_argv(reviewer, prompt, shown)
+            print(f"{reviewer}: {shlex.join(argv)}")
         return EXIT_OK
 
     invocation = describe_invocation(author, args.description)

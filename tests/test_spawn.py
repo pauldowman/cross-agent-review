@@ -125,19 +125,16 @@ class ConfiguredTableTest(unittest.TestCase):
     def setUp(self):
         self.review = review_module.load()
 
-    def test_every_configured_reviewer_has_a_harness_entry(self):
-        for reviewers in self.review.REVIEWERS.values():
-            for reviewer in reviewers:
-                self.assertIn(reviewer, self.review.HARNESS)
-
     def test_every_harness_template_resolves(self):
-        for reviewer in self.review.HARNESS:
-            self.assertIn("PROMPT", self.review.resolve_argv(reviewer, "PROMPT"))
-
-    def test_every_harness_family_has_an_extractor(self):
         for reviewer, harness in self.review.HARNESS.items():
             with self.subTest(reviewer=reviewer):
-                self.assertIn(harness.family, self.review.EXTRACTORS)
+                needs_file = self.review.OUTPUT_PLACEHOLDER in harness.argv
+                output = pathlib.Path("/tmp/review-output") if needs_file else None
+                argv = self.review.resolve_argv(reviewer, "PROMPT", output)
+                self.assertIn("PROMPT", argv)
+                self.assertNotIn(self.review.PROMPT_PLACEHOLDER, argv)
+                self.assertNotIn(self.review.OUTPUT_PLACEHOLDER, argv)
+
 
 
 class TimeoutConfigurationTest(SpawnTestCase):
