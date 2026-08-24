@@ -83,7 +83,7 @@ class PromptTest(SpawnTestCase):
         prompt = self.review.build_prompt("the uncommitted changes", "/some/where")
         self.assertIn("the uncommitted changes", prompt)
         self.assertIn("/some/where", prompt)
-        self.assertIn("Do not modify", prompt)
+        self.assertIn("Leave the working copy exactly as you found it", prompt)
 
     def test_prompt_tells_the_reviewer_to_resolve_the_description_itself(self):
         prompt = self.review.build_prompt("the current branch", "/some/where")

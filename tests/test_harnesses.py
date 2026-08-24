@@ -8,9 +8,11 @@ from test_spawn import SpawnTestCase, run_main
 
 REVIEW_BODY = "The codex reviewer found an unhandled error path in the parser."
 
-READ_ONLY_FLAGS = {
+# Each harness states its permission posture explicitly rather than
+# inheriting whatever the user's config last set.
+PERMISSION_FLAGS = {
     "claude": ("--permission-mode", "plan"),
-    "codex": ("-s", "read-only"),
+    "codex": ("-s", "danger-full-access"),
 }
 
 
@@ -60,10 +62,10 @@ class ConfiguredHarnessTest(unittest.TestCase):
                     model, reviewer, f"{reviewer} runs {model}, which its key hides"
                 )
 
-    def test_every_harness_carries_its_read_only_flag(self):
+    def test_every_harness_states_its_permissions_explicitly(self):
         for reviewer, harness in self.review.HARNESS.items():
             with self.subTest(reviewer=reviewer):
-                flag, value = READ_ONLY_FLAGS[harness.family]
+                flag, value = PERMISSION_FLAGS[harness.family]
                 self.assertIn(flag, harness.argv)
                 self.assertEqual(harness.argv[harness.argv.index(flag) + 1], value)
 

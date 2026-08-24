@@ -61,27 +61,25 @@ Grades are `A`, `B`, `C`, `D`, `F`, plus `NA` when the reviewer could not find w
 
 `KNOWN_AUTHORS`, `AUTHOR_FAMILY`, `REVIEWERS`, and `HARNESS` at the top of `bin/review` are the whole configuration. A new author needs an entry in the first three. Each harness key names the model it runs, so an entry cannot drift from its key.
 
-### codex cannot inspect code on this machine yet
+### Reviewers are not sandboxed
 
-Verified by a live end-to-end run: the codex reviewer completes, honors the grade contract, and returns `<grade>NA</grade>` — because every shell command it tries fails with
+`codex` runs with `-s danger-full-access` and the prompt is what tells reviewers to leave the working copy alone. This is deliberate, and it is a trade:
 
-```
-bwrap: No permissions to create new namespace, likely because the kernel does
-not allow non-privileged user namespaces.
-```
+- `codex exec -s read-only` runs every command under bubblewrap, which fails on a kernel that blocks unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`, Ubuntu's default). A sandboxed reviewer here can talk but cannot run `git diff` or read a file — verified live: it returned `NA` having reviewed nothing.
+- Unsandboxed, the same reviewer returns a real graded review in ~35s.
 
-`codex exec -s read-only` sandboxes each command with bubblewrap, and this kernel blocks unprivileged user namespaces, so codex can talk but cannot run `git diff` or read a file. It will keep returning `not_found` and recording `NA` rows until that changes.
+The cost is that nothing *enforces* read-only any more. A prompt is not a security boundary: a reviewer that misfires, or that reads a prompt injection planted in the code under review, can change the working tree, git state, or files outside the repo. The prompt names every category it must not touch, and a live run confirmed HEAD, the working tree, and the stash were untouched — but that is evidence, not a guarantee.
 
-The cause is Ubuntu's AppArmor restriction (`kernel.apparmor_restrict_unprivileged_userns = 1`). To enable it:
+To restore enforcement, either enable user namespaces and set `-s read-only` back in `codex_harness`:
 
 ```
-sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0     # this boot
-echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/60-userns.conf
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+bwrap --ro-bind / / --dev /dev true    # silence means it works
 ```
 
-Verify with `bwrap --ro-bind / / --dev /dev true` — silence means it works. Then re-run the smoke check and expect two `ok` rows.
+or run reviewers against a throwaway clone rather than the author's tree.
 
-Dropping `-s read-only` would also make codex work, by letting a reviewer write to the author's tree mid-review. That trade is not made here.
+`claude` keeps `--permission-mode plan`, which blocks edits without blocking inspection, so it costs nothing to leave on.
 
 **opencode is not currently configured.** `opencode run` returns zero bytes and hangs past 90 seconds on this machine — reproduced 4 times consecutively, with valid Z.AI credentials. A long-lived interactive `opencode` TUI was running throughout, and `opencode run` starts its own local server, so session contention is the leading suspect. To retest: close the interactive session and run
 
@@ -125,3 +123,4 @@ Expect two reviews on stdout and two rows with `status = ok` and a grade.
 - `SIGKILL` on the tool itself leaks the reviewer subprocesses. `SIGINT` and `SIGTERM` are handled: reviewers are killed and the tool exits in milliseconds, though the interrupt path skips cleanup of codex's empty temp file in `/tmp`.
 - A reviewer that escapes its process group by starting its own session survives the timeout kill. The drain is bounded so this cannot hang the tool, but the process is leaked.
 - `cost_usd` is recorded only for harnesses that report it — `claude` does, `codex` does not.
+- Reviewers are not sandboxed; the prompt is the only thing stopping a reviewer from changing your working copy. See **Reviewers are not sandboxed** above.
