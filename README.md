@@ -22,7 +22,10 @@ The description is a *pointer*, not the thing itself. The reviewer resolves it a
 
 ```
 ln -s "$PWD/bin/cross-agent-review" ~/.local/bin/cross-agent-review
+ln -s "$PWD/skills/cross-agent-review" ~/.claude/skills/cross-agent-review
 ```
+
+The second symlink installs the skill that tells agents how to call this. Both are absolute, so re-run them if you move the checkout.
 
 Single-file Python 3, standard library only. Requires the harnesses it routes to: `claude` and `codex`. Both the model and codex's reasoning effort are pinned in `bin/cross-agent-review`, so a reviewer never silently inherits whatever your config last set.
 
@@ -117,7 +120,7 @@ If that returns promptly, add an `opencode` entry to `HARNESS` with an extractor
 python3 -m unittest discover -s tests
 ```
 
-There is also a `cross-agent-review` skill at `~/.claude/skills/cross-agent-review/` telling agents how to call this.
+The skill agents use to call this lives in `skills/cross-agent-review/SKILL.md`, so it stays in step with the tool it documents. See **Install** for the symlink.
 
 The bare `discover` form finds nothing — `-s tests` is required. Tests never invoke a real model: a fake harness under `tests/fixtures/` stands in, and the ledger is redirected to a temporary file for every test.
 
