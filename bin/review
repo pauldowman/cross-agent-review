@@ -275,10 +275,8 @@ Resolve that description against the repository yourself. It may name a branch, 
 the uncommitted changes, or a path to a file. Inspect the actual work with git \
 commands and by reading files -- do not rely on the description alone.
 
-Leave the working copy exactly as you found it. Nothing enforces this, so it \
-is on you: do not create, modify, or delete files; do not commit, stage, \
-stash, checkout, branch, reset, or otherwise change git state; do not install \
-or upgrade anything. Read files and run read-only commands only.
+Make no changes. Leave the working copy and the git state exactly as you found \
+them.
 
 Report what is wrong, what is risky, and what should change before this ships. \
 Keep the review under 400 words.

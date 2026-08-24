@@ -68,7 +68,7 @@ Grades are `A`, `B`, `C`, `D`, `F`, plus `NA` when the reviewer could not find w
 - `codex exec -s read-only` runs every command under bubblewrap, which fails on a kernel that blocks unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`, Ubuntu's default). A sandboxed reviewer here can talk but cannot run `git diff` or read a file — verified live: it returned `NA` having reviewed nothing.
 - Unsandboxed, the same reviewer returns a real graded review in ~35s.
 
-The cost is that nothing *enforces* read-only any more. A prompt is not a security boundary: a reviewer that misfires, or that reads a prompt injection planted in the code under review, can change the working tree, git state, or files outside the repo. The prompt names every category it must not touch, and a live run confirmed HEAD, the working tree, and the stash were untouched — but that is evidence, not a guarantee.
+The cost is that nothing *enforces* read-only any more. A prompt is not a security boundary: a reviewer that misfires, or that reads a prompt injection planted in the code under review, can change the working tree, git state, or files outside the repo. The prompt tells reviewers to make no changes, and a live run confirmed HEAD, the working tree, and the stash were untouched — but that is evidence, not a guarantee.
 
 To restore enforcement, either enable user namespaces and set `-s read-only` back in `codex_harness`:
 

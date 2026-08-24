@@ -233,16 +233,11 @@ class PromptContractTest(unittest.TestCase):
         prompt = self.review.build_prompt("the branch", "/tmp")
         self.assertIn(f"<grade>{self.review.NOT_FOUND_GRADE}</grade>", prompt)
 
-    def test_the_prompt_forbids_every_kind_of_local_change(self):
+    def test_the_prompt_tells_the_reviewer_to_make_no_changes(self):
         """Nothing enforces read-only any more, so the wording is the control."""
         prompt = self.review.build_prompt("the branch", "/tmp")
-        for forbidden in ("create", "modify", "delete", "commit", "stash", "install"):
-            with self.subTest(forbidden=forbidden):
-                self.assertIn(forbidden, prompt)
-
-    def test_the_prompt_says_the_prohibition_is_not_enforced(self):
-        prompt = self.review.build_prompt("the branch", "/tmp")
-        self.assertIn("Nothing enforces this", prompt)
+        self.assertIn("Make no changes", prompt)
+        self.assertIn("git state", prompt)
 
     def test_the_prompt_caps_the_review_length(self):
         self.assertIn("400 words", self.review.build_prompt("x", "/tmp"))
