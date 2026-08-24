@@ -105,21 +105,21 @@ class GradedRunTest(SpawnTestCase):
 
     def test_a_graded_reply_records_the_grade_and_returns_the_body(self):
         self.echo(reply("C"))
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_OK)
         self.assertEqual(run.grade, "C")
         self.assertEqual(run.text, BODY)
 
     def test_an_unparsable_reply_keeps_the_text_and_records_no_grade(self):
         self.echo(LONG_ENOUGH_REVIEW)
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_UNPARSED)
         self.assertIsNone(run.grade)
         self.assertEqual(run.text, LONG_ENOUGH_REVIEW)
 
     def test_a_not_found_reply_records_na(self):
         self.echo(reply("NA", "I could not find the branch you named."))
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_NOT_FOUND)
         self.assertEqual(run.grade, "NA")
 

@@ -9,6 +9,10 @@ def claude_envelope(**fields):
     return json.dumps({"result": GRADED_REVIEW, "is_error": False, **fields})
 
 
+def opencode_text_event(text=GRADED_REVIEW):
+    return json.dumps({"type": "text", "part": {"type": "text", "text": text}})
+
+
 class ExtractClaudeTest(unittest.TestCase):
     def setUp(self):
         self.review = review_module.load()
@@ -120,7 +124,7 @@ class ClassifiedRunTest(SpawnTestCase):
     def test_a_claude_envelope_becomes_a_review(self):
         self.use_claude_family()
         self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=claude_envelope())
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_OK)
         self.assertEqual(run.text, LONG_ENOUGH_REVIEW)
 
@@ -132,7 +136,7 @@ class ClassifiedRunTest(SpawnTestCase):
                 {"result": "credit balance too low", "is_error": True}
             ),
         )
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_HARNESS_ERROR)
         self.assertEqual(run.text, "")
         self.assertIn("credit balance too low", run.notice)
@@ -143,22 +147,44 @@ class ClassifiedRunTest(SpawnTestCase):
             FAKE_HARNESS_MODE="echo",
             FAKE_HARNESS_OUTPUT=claude_envelope(total_cost_usd=0.0412),
         )
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.cost_usd, 0.0412)
 
     def test_a_harness_without_cost_reporting_records_none(self):
         self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=LONG_ENOUGH_REVIEW)
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertIsNone(run.cost_usd)
+
+    def test_an_opencode_text_event_becomes_a_review(self):
+        self.use_fake_harness(family="opencode")
+        self.set_env(
+            FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=opencode_text_event()
+        )
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
+        self.assertEqual(run.status, self.review.STATUS_OK)
+        self.assertEqual(run.text, LONG_ENOUGH_REVIEW)
+
+    def test_an_opencode_error_event_and_nonzero_exit_are_both_preserved(self):
+        self.use_fake_harness(family="opencode")
+        self.set_env(
+            FAKE_HARNESS_MODE="nonzero_both",
+            FAKE_HARNESS_OUTPUT=json.dumps(
+                {"type": "error", "error": {"data": {"message": "out of credit"}}}
+            ),
+        )
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
+        self.assertEqual(run.status, self.review.STATUS_NONZERO_EXIT)
+        self.assertIn("harness exited 3", run.notice)
+        self.assertIn("out of credit", run.notice)
 
     def test_empty_harness_output_is_not_a_review(self):
         self.set_env(FAKE_HARNESS_MODE="empty")
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_EMPTY_OUTPUT)
 
     def test_a_non_zero_exit_is_not_a_review(self):
         self.set_env(FAKE_HARNESS_MODE="nonzero")
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_NONZERO_EXIT)
         self.assertIn("harness failed", run.stderr)
 

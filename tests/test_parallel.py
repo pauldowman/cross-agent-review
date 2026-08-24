@@ -32,17 +32,21 @@ class ParallelTestCase(SpawnTestCase):
         script = f"printf %s {shlex.quote(text)}"
         if delay:
             script = f"sleep {delay}; {script}"
-        self.review.HARNESS[name] = self.review.Harness(
-            "plain", ("/bin/sh", "-c", script, self.review.PROMPT_PLACEHOLDER)
+        self.install_harness(
+            name,
+            "plain",
+            ("/bin/sh", "-c", script, self.review.PROMPT_PLACEHOLDER),
         )
 
     def broken_harness(self, name):
-        self.review.HARNESS[name] = self.review.Harness(
-            "plain", ("/nonexistent/harness", self.review.PROMPT_PLACEHOLDER)
+        self.install_harness(
+            name,
+            "plain",
+            ("/nonexistent/harness", self.review.PROMPT_PLACEHOLDER),
         )
 
     def use_reviewers(self, *names):
-        self.route_to(*names)
+        self.route_to(*(self.review.Reviewer("plain", name) for name in names))
 
 
 class TwoReviewersTest(ParallelTestCase):
@@ -108,7 +112,7 @@ class PartialFailureTest(ParallelTestCase):
 
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn(FIRST, out)
-        self.assertIn("beta failed", err)
+        self.assertIn("beta via plain failed", err)
 
     def test_a_failed_reviewer_is_still_recorded(self):
         self.static_harness("alpha", reply("A", FIRST))
@@ -138,8 +142,8 @@ class PartialFailureTest(ParallelTestCase):
 
     def test_a_reviewer_that_raises_does_not_lose_the_others(self):
         self.static_harness("alpha", reply("A", FIRST))
-        self.review.HARNESS["beta"] = self.review.Harness(
-            "plain", ("/bin/sh", "-c", "true")
+        self.install_harness(
+            "beta", "plain", ("/bin/sh", "-c", "true")
         )
         self.use_reviewers("alpha", "beta")
 
@@ -147,7 +151,7 @@ class PartialFailureTest(ParallelTestCase):
 
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn(FIRST, out)
-        self.assertIn("beta could not be run", err)
+        self.assertIn("beta via plain could not be run", err)
 
 
 class InterruptTest(ParallelTestCase):

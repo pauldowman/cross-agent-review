@@ -58,6 +58,7 @@ class SpawnTestCase(unittest.TestCase):
 
     def setUp(self):
         self.review = review_module.load()
+        self.harness_argv = {}
         self.use_fake_harness()
         self.use_temporary_database()
 
@@ -69,11 +70,23 @@ class SpawnTestCase(unittest.TestCase):
         self.set_env(REVIEW_DB=str(self.db_path))
 
     def use_fake_harness(self, argv=None, family="plain"):
-        self.review.HARNESS["fake"] = self.review.Harness(
+        self.fake_reviewer = self.install_harness(
+            "fake",
             family,
             argv or (sys.executable, str(FIXTURE), self.review.PROMPT_PLACEHOLDER),
         )
-        self.route_to("fake")
+        self.route_to(self.fake_reviewer)
+
+    def install_harness(self, model, family, argv):
+        self.harness_argv[family, model] = argv
+
+        def build(selected_model):
+            return self.review.Harness(
+                family, self.harness_argv[family, selected_model]
+            )
+
+        self.review.HARNESSES[family] = build
+        return self.review.Reviewer(family, model)
 
     def route_to(self, *reviewers):
         """Send every author to these reviewers, bypassing the config file."""
@@ -100,27 +113,30 @@ class PromptTest(SpawnTestCase):
 
 class ArgvTest(SpawnTestCase):
     def test_prompt_replaces_the_placeholder(self):
-        argv = self.review.resolve_argv("fake", "PROMPT TEXT")
+        argv = self.review.resolve_argv(self.fake_reviewer, "PROMPT TEXT")
         self.assertIn("PROMPT TEXT", argv)
         self.assertNotIn(self.review.PROMPT_PLACEHOLDER, argv)
 
     def test_placeholder_is_matched_by_value_not_identity(self):
         self.use_fake_harness(argv=("bin", "".join(["<prom", "pt>"])))
-        self.assertEqual(self.review.resolve_argv("fake", "TEXT"), ["bin", "TEXT"])
+        self.assertEqual(
+            self.review.resolve_argv(self.fake_reviewer, "TEXT"), ["bin", "TEXT"]
+        )
 
     def test_template_without_a_placeholder_is_rejected(self):
         self.use_fake_harness(argv=("bin", "--flag"))
         with self.assertRaises(ValueError):
-            self.review.resolve_argv("fake", "TEXT")
+            self.review.resolve_argv(self.fake_reviewer, "TEXT")
 
     def test_template_with_two_placeholders_is_rejected(self):
         placeholder = self.review.PROMPT_PLACEHOLDER
         self.use_fake_harness(argv=("bin", placeholder, placeholder))
         with self.assertRaises(ValueError):
-            self.review.resolve_argv("fake", "TEXT")
+            self.review.resolve_argv(self.fake_reviewer, "TEXT")
 
     def test_claude_argv_puts_the_prompt_before_every_long_flag(self):
-        argv = self.review.resolve_argv("claude-opus-5", "PROMPT TEXT")
+        reviewer = self.review.Reviewer("claude", "any-versioned-model")
+        argv = self.review.resolve_argv(reviewer, "PROMPT TEXT")
         prompt_index = argv.index("PROMPT TEXT")
         flag_indexes = [i for i, part in enumerate(argv) if part.startswith("--")]
         self.assertTrue(flag_indexes)
@@ -134,8 +150,10 @@ class ConfiguredTableTest(unittest.TestCase):
         self.review = review_module.load()
 
     def test_every_harness_template_resolves(self):
-        for reviewer, harness in self.review.HARNESS.items():
-            with self.subTest(reviewer=reviewer):
+        for family, builder in self.review.HARNESSES.items():
+            with self.subTest(harness=family):
+                reviewer = self.review.Reviewer(family, "model-under-test")
+                harness = builder(reviewer.model)
                 needs_file = self.review.OUTPUT_PLACEHOLDER in harness.argv
                 output = pathlib.Path("/tmp/review-output") if needs_file else None
                 argv = self.review.resolve_argv(reviewer, "PROMPT", output)
@@ -189,26 +207,26 @@ class DryRunTest(SpawnTestCase):
 class RunReviewerTest(SpawnTestCase):
     def test_harness_output_is_returned(self):
         self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=GRADED_REVIEW)
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_OK)
         self.assertEqual(run.text, LONG_ENOUGH_REVIEW)
         self.assertEqual(run.returncode, 0)
 
     def test_exit_code_is_captured(self):
         self.set_env(FAKE_HARNESS_MODE="nonzero")
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.returncode, 3)
 
     def test_harness_family_is_recorded(self):
         self.set_env(FAKE_HARNESS_MODE="echo")
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.family, "plain")
 
     def test_missing_harness_binary_is_reported_not_raised(self):
         self.use_fake_harness(
             argv=("/nonexistent/harness", self.review.PROMPT_PLACEHOLDER)
         )
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_HARNESS_MISSING)
         self.assertIn("/nonexistent/harness", run.notice)
 
@@ -220,7 +238,7 @@ class RunReviewerTest(SpawnTestCase):
             self.use_fake_harness(
                 argv=(str(unrunnable), self.review.PROMPT_PLACEHOLDER)
             )
-            run = self.review.run_reviewer("fake", "prompt", timeout=30)
+            run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
             self.assertEqual(run.status, self.review.STATUS_HARNESS_MISSING)
 
     def test_timeout_kills_the_harness_and_its_grandchild(self):
@@ -228,7 +246,7 @@ class RunReviewerTest(SpawnTestCase):
             pidfile = pathlib.Path(tmp) / "grandchild.pid"
             self.set_env(FAKE_HARNESS_MODE="hang", FAKE_HARNESS_PIDFILE=str(pidfile))
 
-            run = self.review.run_reviewer("fake", "prompt", timeout=1)
+            run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=1)
 
             self.assertEqual(run.status, self.review.STATUS_TIMEOUT)
             self.assertIn("timed out after 1s", run.notice)
@@ -246,7 +264,7 @@ class RunReviewerTest(SpawnTestCase):
             )
 
             started = time.monotonic()
-            run = self.review.run_reviewer("fake", "prompt", timeout=1)
+            run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=1)
             elapsed = time.monotonic() - started
 
             survivor = wait_for_pidfile(pidfile)
@@ -267,7 +285,7 @@ class RunReviewerTest(SpawnTestCase):
 
     def test_child_environment_marks_a_review_as_active(self):
         self.set_env(FAKE_HARNESS_MODE="env")
-        run = self.review.run_reviewer("fake", "prompt", timeout=30)
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertIn("REVIEW_ACTIVE=1", run.text)
 
 

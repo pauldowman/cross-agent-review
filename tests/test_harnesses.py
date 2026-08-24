@@ -1,3 +1,4 @@
+import json
 import pathlib
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ REVIEW_BODY = "The codex reviewer found an unhandled error path in the parser."
 PERMISSION_FLAGS = {
     "claude": ("--permission-mode", "plan"),
     "codex": ("-s", "danger-full-access"),
+    "opencode": ("--agent", "plan"),
 }
 
 
@@ -23,26 +25,27 @@ class ConfiguredHarnessTest(unittest.TestCase):
         self.review = review_module.load()
 
     def test_every_harness_pins_its_model_explicitly(self):
-        for reviewer, harness in self.review.HARNESS.items():
-            with self.subTest(reviewer=reviewer):
+        model = "model-selected-by-config"
+        for family, builder in self.review.HARNESSES.items():
+            with self.subTest(harness=family):
+                harness = builder(model)
                 pinned = [f for f in ("--model", "-m") if f in harness.argv]
-                self.assertTrue(pinned, f"{reviewer} does not pin a model")
-                model = harness.argv[harness.argv.index(pinned[0]) + 1]
-                self.assertIn(
-                    model, reviewer, f"{reviewer} runs {model}, which its key hides"
-                )
+                self.assertTrue(pinned, f"{family} does not pin a model")
+                selected = harness.argv[harness.argv.index(pinned[0]) + 1]
+                self.assertEqual(selected, model)
 
     def test_every_harness_states_its_permissions_explicitly(self):
-        for reviewer, harness in self.review.HARNESS.items():
-            with self.subTest(reviewer=reviewer):
+        for family, builder in self.review.HARNESSES.items():
+            with self.subTest(harness=family):
+                harness = builder("model-under-test")
                 flag, value = PERMISSION_FLAGS[harness.family]
                 self.assertIn(flag, harness.argv)
                 self.assertEqual(harness.argv[harness.argv.index(flag) + 1], value)
 
     def test_every_harness_family_has_an_extractor(self):
-        for reviewer, harness in self.review.HARNESS.items():
-            with self.subTest(reviewer=reviewer):
-                self.assertIn(harness.family, self.review.EXTRACTORS)
+        for family in self.review.HARNESSES:
+            with self.subTest(harness=family):
+                self.assertIn(family, self.review.EXTRACTORS)
 
 
 class DryRunOfConfiguredReviewersTest(unittest.TestCase):
@@ -52,7 +55,7 @@ class DryRunOfConfiguredReviewersTest(unittest.TestCase):
         self.review = review_module.load()
 
     def test_any_author_can_be_dry_run(self):
-        for author in list(self.review.HARNESS) + ["some-unknown-model"]:
+        for author in ("claude-opus-5", "gpt-5.6-sol", "some-unknown-model"):
             with self.subTest(author=author):
                 code, out, _ = run_main(
                     self.review, author, PROJECT, GOAL, "the branch", "--dry-run"
@@ -65,6 +68,13 @@ class DryRunOfConfiguredReviewersTest(unittest.TestCase):
             self.review, "claude-opus-5", PROJECT, GOAL, "the branch", "--dry-run"
         )
         self.assertIn(f"-o '{self.review.OUTPUT_PLACEHOLDER}'", out)
+
+    def test_the_opencode_command_requests_json_events(self):
+        _, out, _ = run_main(
+            self.review, "claude-opus-5", PROJECT, GOAL, "the branch", "--dry-run"
+        )
+        self.assertIn("opencode/x-preview-f-free via opencode", out)
+        self.assertIn("--format json", out)
 
     def test_a_dry_run_creates_no_output_files(self):
         before = set(pathlib.Path(tempfile.gettempdir()).glob("review-*"))
@@ -121,13 +131,65 @@ class ExtractCodexTest(unittest.TestCase):
             self.assertIsNone(self.review.extract_codex("", path).cost_usd)
 
 
+class ExtractOpenCodeTest(unittest.TestCase):
+    def setUp(self):
+        self.review = review_module.load()
+
+    def event(self, event_type, **fields):
+        return json.dumps({"type": event_type, **fields})
+
+    def text_event(self, text):
+        return self.event("text", part={"type": "text", "text": text})
+
+    def test_the_last_text_event_is_the_review(self):
+        stdout = "\n".join(
+            (
+                self.text_event("I will inspect the diff."),
+                self.event("tool_use", part={"tool": "bash"}),
+                self.text_event(REVIEW_BODY),
+            )
+        )
+        extracted = self.review.extract_opencode(stdout)
+        self.assertEqual(extracted.text, REVIEW_BODY)
+        self.assertIsNone(extracted.error)
+
+    def test_an_error_event_is_not_a_review(self):
+        stdout = self.event(
+            "error", error={"data": {"message": "Unexpected server error"}}
+        )
+        extracted = self.review.extract_opencode(stdout)
+        self.assertEqual(extracted.text, "")
+        self.assertIn("Unexpected server error", extracted.error)
+
+    def test_invalid_json_is_an_error(self):
+        extracted = self.review.extract_opencode("not json")
+        self.assertIn("invalid JSON", extracted.error)
+
+    def test_a_stream_without_text_is_an_error(self):
+        extracted = self.review.extract_opencode(
+            self.event("tool_use", part={"tool": "bash"})
+        )
+        self.assertIn("no text event", extracted.error)
+
+    def test_a_malformed_text_event_is_an_error(self):
+        extracted = self.review.extract_opencode(
+            self.event("text", part={"type": "text", "text": 42})
+        )
+        self.assertIn("malformed text event", extracted.error)
+
+    def test_opencode_reports_no_cost(self):
+        self.assertIsNone(self.review.extract_opencode(self.text_event(REVIEW_BODY)).cost_usd)
+
+
 class OutputFileTest(SpawnTestCase):
     def test_a_harness_without_an_output_placeholder_gets_no_file(self):
-        self.assertIsNone(self.review.allocate_output_file("claude-opus-5"))
+        reviewer = self.review.Reviewer("claude", "model-under-test")
+        self.assertIsNone(self.review.allocate_output_file(reviewer))
 
     def test_a_harness_with_an_output_placeholder_gets_its_own_file(self):
-        first = self.review.allocate_output_file(f"codex-{self.review.CODEX_MODEL}")
-        second = self.review.allocate_output_file(f"codex-{self.review.CODEX_MODEL}")
+        reviewer = self.review.Reviewer("codex", "model-under-test")
+        first = self.review.allocate_output_file(reviewer)
+        second = self.review.allocate_output_file(reviewer)
         self.addCleanup(first.unlink, True)
         self.addCleanup(second.unlink, True)
 
@@ -144,7 +206,8 @@ class OutputFileTest(SpawnTestCase):
             return path
 
         self.review.allocate_output_file = remember
-        self.review.HARNESS["writer"] = self.review.Harness(
+        reviewer = self.install_harness(
+            "writer",
             "codex",
             (
                 "/bin/sh",
@@ -155,13 +218,14 @@ class OutputFileTest(SpawnTestCase):
             ),
         )
 
-        self.review.run_reviewer("writer", "prompt", timeout=30)
+        self.review.run_reviewer(reviewer, "prompt", timeout=30)
 
         self.assertEqual(len(seen), 1)
         self.assertFalse(seen[0].exists(), "the run left its output file behind")
 
     def test_the_prompt_reaches_the_harness_and_the_reply_comes_back(self):
-        self.review.HARNESS["writer"] = self.review.Harness(
+        reviewer = self.install_harness(
+            "writer",
             "codex",
             (
                 "/bin/sh",
@@ -174,7 +238,7 @@ class OutputFileTest(SpawnTestCase):
         )
 
         run = self.review.run_reviewer(
-            "writer", reply("C", REVIEW_BODY), timeout=30
+            reviewer, reply("C", REVIEW_BODY), timeout=30
         )
 
         self.assertEqual(run.status, self.review.STATUS_OK)

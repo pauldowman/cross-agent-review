@@ -26,6 +26,7 @@ PROMPT_PLACEHOLDER = "<prompt>"
 OUTPUT_PLACEHOLDER = "<output-file>"
 
 Harness = namedtuple("Harness", "family argv")
+Reviewer = namedtuple("Reviewer", "harness model")
 
 
 def claude_harness(model):
@@ -76,43 +77,52 @@ def codex_harness(model):
     )
 
 
-CLAUDE_MODELS = ("claude-opus-5", "claude-sonnet-5")
-CODEX_MODEL = "gpt-5.6-sol"
-# Pinned for the same reason as the model: the user's config default is
-# xhigh, which changes latency and cost invisibly and risks timing out.
+def opencode_harness(model):
+    return Harness(
+        "opencode",
+        (
+            "opencode",
+            "run",
+            "--agent",
+            "plan",
+            "--format",
+            "json",
+            "--model",
+            model,
+            PROMPT_PLACEHOLDER,
+        ),
+    )
+
+
+# Pinned because the user's config default can change latency and cost
+# invisibly and risks timing out.
 CODEX_REASONING_EFFORT = "medium"
 
-# Each key names the model it runs, so an entry cannot drift from its key.
-HARNESS = {
-    **{model: claude_harness(model) for model in CLAUDE_MODELS},
-    f"codex-{CODEX_MODEL}": codex_harness(CODEX_MODEL),
+# Harnesses know how to invoke a model, but model selection belongs entirely
+# to the reviewer configuration.
+HARNESSES = {
+    "claude": claude_harness,
+    "codex": codex_harness,
+    "opencode": opencode_harness,
 }
 
-EXAMPLE_CONFIG = f"""# Which reviewers review which author, for cross-agent-review.
+EXAMPLE_CONFIG = """# Which reviewers review which author, for cross-agent-review.
 #
 # Each rule's `pattern` is a regular expression, matched case-insensitively
 # against the author's model name. The first matching rule wins, so put the
-# specific rules first and finish with a catch-all. `reviewers` names entries
-# from the HARNESS table in the cross-agent-review script:
-#   {", ".join(sorted(HARNESS))}
+# specific rules first and finish with a catch-all. Each reviewer specifies
+# the harness to invoke and the model name to pass to it. Replace the example
+# model values below with models available through your harnesses.
 #
 # Route an author away from its own model, or it reviews itself.
 
 [[rule]]
-pattern = "^claude-opus"
-reviewers = ["codex-{CODEX_MODEL}", "claude-sonnet-5"]
-
-[[rule]]
-pattern = "^claude"
-reviewers = ["codex-{CODEX_MODEL}", "claude-opus-5"]
-
-[[rule]]
-pattern = "^gpt|^codex"
-reviewers = ["claude-opus-5", "claude-sonnet-5"]
-
-[[rule]]
 pattern = "."
-reviewers = ["codex-{CODEX_MODEL}", "claude-opus-5"]
+reviewers = [
+    { harness = "codex", model = "YOUR-CODEX-MODEL" },
+    { harness = "claude", model = "YOUR-CLAUDE-MODEL" },
+    { harness = "opencode", model = "YOUR-OPENCODE-MODEL" },
+]
 """
 
 
@@ -228,7 +238,7 @@ def load_rules(path=None):
     except OSError as error:
         raise ConfigurationError(
             f"no reviewer configuration at {path} ({error.strerror}).\n"
-            f"Create it with:\n\n"
+            f"Create a template, then replace its model values, with:\n\n"
             f"    mkdir -p {path.parent}\n"
             f"    cat > {path} <<'EOF'\n{EXAMPLE_CONFIG}EOF"
         )
@@ -254,17 +264,41 @@ def parse_rule(rule, index, path):
     if not isinstance(reviewers, list) or not reviewers:
         raise ConfigurationError(f"{where} needs a non-empty `reviewers` list")
 
-    unknown = [name for name in reviewers if name not in HARNESS]
-    if unknown:
-        raise ConfigurationError(
-            f"{where} names unknown reviewers {', '.join(map(repr, unknown))}. "
-            f"Known reviewers: {', '.join(sorted(HARNESS))}"
-        )
+    parsed_reviewers = tuple(
+        parse_reviewer(reviewer, position, where)
+        for position, reviewer in enumerate(reviewers, 1)
+    )
     try:
         compiled = re.compile(pattern, re.IGNORECASE)
     except re.error as error:
         raise ConfigurationError(f"{where} has an invalid pattern: {error}")
-    return compiled, tuple(reviewers)
+    return compiled, parsed_reviewers
+
+
+def parse_reviewer(value, position, where):
+    location = f"reviewer {position} in {where}"
+    if not isinstance(value, dict):
+        raise ConfigurationError(
+            f"{location} must be an inline table with `harness` and `model` strings"
+        )
+
+    unexpected = sorted(set(value) - {"harness", "model"})
+    if unexpected:
+        raise ConfigurationError(
+            f"{location} has unknown fields {', '.join(map(repr, unexpected))}"
+        )
+
+    harness, model = value.get("harness"), value.get("model")
+    if not isinstance(harness, str) or not harness.strip():
+        raise ConfigurationError(f"{location} needs a non-empty `harness` string")
+    if harness not in HARNESSES:
+        raise ConfigurationError(
+            f"{location} names unknown harness {harness!r}. "
+            f"Known harnesses: {', '.join(sorted(HARNESSES))}"
+        )
+    if not isinstance(model, str) or not model.strip():
+        raise ConfigurationError(f"{location} needs a non-empty `model` string")
+    return Reviewer(harness, model)
 
 
 def reviewers_for(author, rules):
@@ -354,6 +388,23 @@ If you cannot find what the description points at, reply with <grade>NA</grade> 
 and use the review to say what you looked for and where."""
 
 
+def harness_for(reviewer):
+    harness = HARNESSES[reviewer.harness](reviewer.model)
+    if harness.family != reviewer.harness:
+        raise ValueError(
+            f"harness builder {reviewer.harness!r} returned family {harness.family!r}"
+        )
+    return harness
+
+
+def reviewer_label(reviewer):
+    return f"{reviewer.model} via {reviewer.harness}"
+
+
+def run_label(run):
+    return f"{run.reviewer} via {run.family}"
+
+
 def resolve_argv(reviewer, prompt, output_path=None):
     """Fill a harness template in, checking each placeholder appears once.
 
@@ -361,7 +412,7 @@ def resolve_argv(reviewer, prompt, output_path=None):
     template may also carry an output placeholder for the path allocated to
     that run.
     """
-    template = HARNESS[reviewer].argv
+    template = harness_for(reviewer).argv
     substitutions = {PROMPT_PLACEHOLDER: prompt}
     if output_path is not None:
         substitutions[OUTPUT_PLACEHOLDER] = str(output_path)
@@ -373,7 +424,7 @@ def resolve_argv(reviewer, prompt, output_path=None):
         found = template.count(placeholder)
         if found != expected:
             raise ValueError(
-                f"harness template for {reviewer!r} needs {expected} "
+                f"harness template for {reviewer_label(reviewer)!r} needs {expected} "
                 f"{placeholder}, found {found}"
             )
 
@@ -447,9 +498,53 @@ def extract_codex(stdout, output_path):
     return Extracted(text, None, None)
 
 
+def extract_opencode(stdout, output_path=None):
+    """Take the last completed text part from OpenCode's JSON event stream."""
+    last_text = None
+    for number, line in enumerate(stdout.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return Extracted(
+                "", None, f"opencode returned invalid JSON on line {number}: {line[:200]!r}"
+            )
+        if not isinstance(event, dict):
+            return Extracted(
+                "",
+                None,
+                f"opencode returned an unexpected event on line {number}: {line[:200]!r}",
+            )
+
+        if event.get("type") == "error":
+            error = event.get("error")
+            if isinstance(error, dict):
+                data = error.get("data")
+                if isinstance(data, dict) and isinstance(data.get("message"), str):
+                    error = data["message"]
+                elif isinstance(error.get("message"), str):
+                    error = error["message"]
+            return Extracted("", None, f"opencode reported an error: {error}")
+
+        if event.get("type") != "text":
+            continue
+        part = event.get("part")
+        if not isinstance(part, dict) or not isinstance(part.get("text"), str):
+            return Extracted(
+                "", None, f"opencode returned a malformed text event on line {number}"
+            )
+        last_text = part["text"]
+
+    if last_text is None:
+        return Extracted("", None, "opencode returned no text event")
+    return Extracted(last_text, None, None)
+
+
 EXTRACTORS = {
     "claude": extract_claude,
     "codex": extract_codex,
+    "opencode": extract_opencode,
     "plain": extract_plain,
 }
 
@@ -532,7 +627,7 @@ def run_reviewer(reviewer, prompt, timeout=None):
 
 
 def needs_output_file(reviewer):
-    return OUTPUT_PLACEHOLDER in HARNESS[reviewer].argv
+    return OUTPUT_PLACEHOLDER in harness_for(reviewer).argv
 
 
 def allocate_output_file(reviewer):
@@ -550,7 +645,7 @@ def allocate_output_file(reviewer):
 
 def run_harness(reviewer, prompt, timeout, output_path):
     """Run one reviewer to completion, killing its whole process group on timeout."""
-    family = HARNESS[reviewer].family
+    family = reviewer.harness
     argv = resolve_argv(reviewer, prompt, output_path)
     timeout = reviewer_timeout() if timeout is None else timeout
     started = time.monotonic()
@@ -559,7 +654,7 @@ def run_harness(reviewer, prompt, timeout, output_path):
         status, text, notice, stderr="", returncode=None, cost_usd=None, grade=None
     ):
         return ReviewerRun(
-            reviewer=reviewer,
+            reviewer=reviewer.model,
             family=family,
             status=status,
             text=text,
@@ -656,7 +751,9 @@ def format_review(run, nonce):
     text look like tool output. The grade is deliberately absent: it is
     recorded, not reported back.
     """
-    label = run.reviewer if run.status == STATUS_OK else f"{run.reviewer}, {run.status}"
+    label = run_label(run)
+    if run.status != STATUS_OK:
+        label = f"{label}, {run.status}"
     return "\n".join(
         [
             f"--- review from {label} "
@@ -677,8 +774,7 @@ def build_parser():
         nargs="?",
         help=(
             "the precise model name of the agent that produced the work, "
-            "including its version, as it names itself (e.g. claude-opus-5, "
-            "gpt-5.6-sol)"
+            "including its version, as it names itself"
         ),
     )
     parser.add_argument(
@@ -738,7 +834,7 @@ def main(argv=None):
         for reviewer in reviewers:
             shown = OUTPUT_PLACEHOLDER if needs_output_file(reviewer) else None
             argv = resolve_argv(reviewer, prompt, shown)
-            print(f"{reviewer}: {shlex.join(argv)}")
+            print(f"{reviewer_label(reviewer)}: {shlex.join(argv)}")
         return EXIT_OK
 
     invocation = describe_invocation(
@@ -787,11 +883,12 @@ def collect(future, reviewer):
     try:
         return future.result()
     except Exception as error:
-        print(f"{TOOL_NAME}: {reviewer} could not be run: {error!r}", file=sys.stderr)
+        label = reviewer_label(reviewer)
+        print(f"{TOOL_NAME}: {label} could not be run: {error!r}", file=sys.stderr)
         traceback.print_exc()
         return ReviewerRun(
-            reviewer=reviewer,
-            family="unknown",
+            reviewer=reviewer.model,
+            family=reviewer.harness,
             status=STATUS_HARNESS_ERROR,
             text="",
             notice=f"the review tool failed to run this reviewer: {error!r}",
@@ -888,7 +985,7 @@ def record_run(connection, invocation, run):
     try:
         insert_run(connection, invocation, run)
     except (sqlite3.Error, OSError) as error:
-        print(f"{TOOL_NAME}: could not record {run.reviewer}: {error}", file=sys.stderr)
+        print(f"{TOOL_NAME}: could not record {run_label(run)}: {error}", file=sys.stderr)
         return False
     return True
 
@@ -941,7 +1038,7 @@ def report_failure(run):
     author's context; as diagnostics for a failure it is what you want.
     """
     sys.stdout.flush()
-    print(f"{TOOL_NAME}: {run.reviewer} failed ({run.status})", file=sys.stderr)
+    print(f"{TOOL_NAME}: {run_label(run)} failed ({run.status})", file=sys.stderr)
     for line in join_notices(run.notice, run.stderr).splitlines():
         print(f"{TOOL_NAME}: {line}", file=sys.stderr)
 

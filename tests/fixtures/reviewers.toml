@@ -1,18 +1,23 @@
 # Routing fixture for the test suite. Tests that care about routing install
-# their own reviewers into HARNESS and override this with a catch-all.
-
-[[rule]]
-pattern = "^claude-opus"
-reviewers = ["codex-gpt-5.6-sol", "claude-sonnet-5"]
+# their own harnesses and override this with a catch-all.
 
 [[rule]]
 pattern = "^claude"
-reviewers = ["codex-gpt-5.6-sol", "claude-opus-5"]
+reviewers = [
+    { harness = "codex", model = "gpt-5.6-sol" },
+    { harness = "opencode", model = "opencode/x-preview-f-free" },
+]
 
 [[rule]]
 pattern = "^gpt|^codex"
-reviewers = ["claude-opus-5", "claude-sonnet-5"]
+reviewers = [
+    { harness = "claude", model = "claude-opus-5" },
+    { harness = "opencode", model = "opencode/x-preview-f-free" },
+]
 
 [[rule]]
 pattern = "."
-reviewers = ["codex-gpt-5.6-sol", "claude-opus-5"]
+reviewers = [
+    { harness = "codex", model = "gpt-5.6-sol" },
+    { harness = "claude", model = "claude-opus-5" },
+]

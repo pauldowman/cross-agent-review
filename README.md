@@ -2,11 +2,11 @@
 
 Ask other AI agents to review your work.
 
-An AI coding agent runs `cross-agent-review <author> <project> <goal> <description>`. The tool picks a set of reviewers for that author, runs each one as a non-interactive subprocess in the author's working directory, returns their review text, and records a grade for each in a local ledger. The author never sees the grades.
+An AI coding agent runs the script bundled with the skill, passing `<author> <project> <goal> <description>`. The tool picks a set of reviewers for that author, runs each one as a non-interactive subprocess in the author's working directory, returns their review text, and records a grade for each in a local ledger. The author never sees the grades.
 
 ```
-cross-agent-review claude-opus-5 my-app "add cursor pagination" "the uncommitted changes"
-cross-agent-review gpt-5.6-sol my-app "fix the retry backoff" "the current branch"
+python3 skills/cross-agent-review/scripts/cross-agent-review claude-opus-5 my-app "add cursor pagination" "the uncommitted changes"
+python3 skills/cross-agent-review/scripts/cross-agent-review gpt-5.6-sol my-app "fix the retry backoff" "the current branch"
 ```
 
 | argument | meaning |
@@ -21,13 +21,12 @@ The description is a *pointer*, not the thing itself. The reviewer resolves it a
 ## Install
 
 ```
-ln -s "$PWD/bin/cross-agent-review" ~/.local/bin/cross-agent-review
-ln -s "$PWD/skills/cross-agent-review" ~/.claude/skills/cross-agent-review
+npx skills add pauldowman/cross-agent-review --skill cross-agent-review --global --agent '*'
 ```
 
-The second symlink installs the skill that tells agents how to call this. Both are absolute, so re-run them if you move the checkout.
+The [`skills` CLI](https://www.npmjs.com/package/skills) installs the complete skill directory for each selected agent, including its bundled script. The skill resolves the script relative to its own `SKILL.md`, so no separate executable or `PATH` setup is needed.
 
-Single-file Python 3, standard library only. Requires the harnesses it routes to: `claude` and `codex`. Both the model and codex's reasoning effort are pinned in `bin/cross-agent-review`, so a reviewer never silently inherits whatever your config last set.
+Single-file Python 3, standard library only. Requires the harnesses selected by the routing config; `claude`, `codex`, and `opencode` are currently supported. Reviewer models are pinned in `reviewers.toml`, and codex's reasoning effort is pinned in the bundled script, so a reviewer never silently inherits either value from a harness's user settings.
 
 ## Calling it from an agent
 
@@ -38,7 +37,7 @@ Exit codes:
 | code | meaning |
 |---|---|
 | 0 | at least one review came back (on stdout) |
-| 2 | usage error — unknown author, no reviewers configured, bad `REVIEW_TIMEOUT` |
+| 2 | usage error — no matching rule, no reviewers configured, bad `REVIEW_TIMEOUT` |
 | 3 | every reviewer failed; nothing to read |
 | 4 | refused: already running inside a review |
 
@@ -59,7 +58,7 @@ One row per reviewer run, successful or not, at `~/.local/share/cross-agent-revi
 
 ```
 sqlite3 ~/.local/share/cross-agent-review/reviews.db \
-  "SELECT project, author, reviewer, grade, count(*) FROM reviews GROUP BY 1,2,3,4"
+  "SELECT project, author, harness, reviewer, grade, count(*) FROM reviews GROUP BY 1,2,3,4,5"
 ```
 
 Columns: `run_id`, `ts`, `project`, `author`, `goal`, `reviewer`, `harness`, `description`, `cwd`, `branch`, `git_sha`, `grade`, `review_text`, `duration_s`, `status`, `cost_usd`. All reviewers of one invocation share a `run_id`. A ledger failure is never allowed to withhold a review that was already paid for — it degrades to a warning on stderr.
@@ -68,32 +67,45 @@ Grades are `A`, `B`, `C`, `D`, `F`, plus `NA` when the reviewer could not find w
 
 ## Configuring who reviews whom
 
-Routing lives in `$XDG_CONFIG_HOME/cross-agent-review/reviewers.toml` (default `~/.config/cross-agent-review/reviewers.toml`). There is no built-in fallback: if the file is missing the tool exits 2 and prints the location together with a complete, copy-pasteable example.
+Routing lives in `$XDG_CONFIG_HOME/cross-agent-review/reviewers.toml` (default `~/.config/cross-agent-review/reviewers.toml`). There is no built-in fallback: if the file is missing the tool exits 2 and prints the location together with a config template whose model placeholders must be replaced.
 
 ```toml
 [[rule]]
-pattern = "^claude-opus"
-reviewers = ["codex-gpt-5.6-sol", "claude-sonnet-5"]
+pattern = "^claude"
+reviewers = [
+    { harness = "codex", model = "gpt-5.6-sol" },
+    { harness = "opencode", model = "opencode/x-preview-f-free" },
+]
+
+[[rule]]
+pattern = "^gpt|^codex"
+reviewers = [
+    { harness = "claude", model = "claude-opus-5" },
+    { harness = "opencode", model = "opencode/x-preview-f-free" },
+]
 
 [[rule]]
 pattern = "."
-reviewers = ["codex-gpt-5.6-sol", "claude-opus-5"]
+reviewers = [
+    { harness = "codex", model = "gpt-5.6-sol" },
+    { harness = "claude", model = "claude-opus-5" },
+]
 ```
 
-Each `pattern` is a regular expression matched case-insensitively anywhere in the author's model name. **The first matching rule wins**, so order specific rules before general ones and end with a catch-all — an author matching no rule is an error. `reviewers` names entries from the `HARNESS` table in the script, which is still code: adding a *reviewer* means adding a harness there, while deciding *who reviews whom* is configuration.
+Each `pattern` is a regular expression matched case-insensitively anywhere in the author's model name. **The first matching rule wins**, so order specific rules before general ones and end with a catch-all — an author matching no rule is an error. Each `reviewers` entry pairs a supported `harness` with the exact `model` string passed to it. Model names are opaque to the script: adding or replacing a model is a config-only change.
 
 Route each author away from its own model, or it reviews itself.
 
-`HARNESS` at the top of `bin/cross-agent-review` defines the available reviewers. Each key names the model it runs, so an entry cannot drift from its key.
+`HARNESSES` in `skills/cross-agent-review/scripts/cross-agent-review` defines how supported harness families are invoked. Adding a new harness family still requires code for its command and output format; adding a model does not.
 
-### Reviewers are not sandboxed
+### Reviewer permissions
 
-`codex` runs with `-s danger-full-access` and the prompt is what tells reviewers to leave the working copy alone. This is deliberate, and it is a trade:
+`codex` runs with `-s danger-full-access` and the prompt is what tells it to leave the working copy alone. This is deliberate, and it is a trade:
 
 - `codex exec -s read-only` runs every command under bubblewrap, which fails on a kernel that blocks unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`, Ubuntu's default). A sandboxed reviewer here can talk but cannot run `git diff` or read a file — verified live: it returned `NA` having reviewed nothing.
 - Unsandboxed, the same reviewer returns a real graded review in ~35s.
 
-The cost is that nothing *enforces* read-only any more. A prompt is not a security boundary: a reviewer that misfires, or that reads a prompt injection planted in the code under review, can change the working tree, git state, or files outside the repo. The prompt tells reviewers to make no changes, and a live run confirmed HEAD, the working tree, and the stash were untouched — but that is evidence, not a guarantee.
+The cost is that nothing *enforces* read-only for codex. A prompt is not a security boundary: a reviewer that misfires, or that reads a prompt injection planted in the code under review, can change the working tree, git state, or files outside the repo. The prompt tells reviewers to make no changes, and a live run confirmed HEAD, the working tree, and the stash were untouched — but that is evidence, not a guarantee.
 
 To restore enforcement, either enable user namespaces and set `-s read-only` back in `codex_harness`:
 
@@ -104,15 +116,7 @@ bwrap --ro-bind / / --dev /dev true    # silence means it works
 
 or run reviewers against a throwaway clone rather than the author's tree.
 
-`claude` keeps `--permission-mode plan`, which blocks edits without blocking inspection, so it costs nothing to leave on.
-
-**opencode is not currently configured.** `opencode run` returns zero bytes and hangs past 90 seconds on this machine — reproduced 4 times consecutively, with valid Z.AI credentials. A long-lived interactive `opencode` TUI was running throughout, and `opencode run` starts its own local server, so session contention is the leading suspect. To retest: close the interactive session and run
-
-```
-opencode run --agent plan --auto -m zai-coding-plan/glm-5.2 "Reply with exactly: OK" </dev/null
-```
-
-If that returns promptly, add an `opencode` entry to `HARNESS` with an extractor that takes the last `{"type":"text"}` event from `--format json`, and route the claude authors to it for a third vendor.
+`claude` uses `--permission-mode plan`, and `opencode` uses `run --agent plan`. OpenCode's plan agent denies its dedicated edit tool, but it still allows shell commands, which can change files; this is not read-only enforcement. OpenCode runs with `--format json`, and the tool extracts the last completed text event as the review. In the example, `opencode/x-preview-f-free` is the provider/model ID currently exposed for Ox Alpha; use `opencode models` to discover its replacement when that preview rotates.
 
 ## Development
 
@@ -120,38 +124,38 @@ If that returns promptly, add an `opencode` entry to `HARNESS` with an extractor
 python3 -m unittest discover -s tests
 ```
 
-The skill agents use to call this lives in `skills/cross-agent-review/SKILL.md`, so it stays in step with the tool it documents. See **Install** for the symlink.
+The skill agents use to call this lives in `skills/cross-agent-review/SKILL.md`, so it stays in step with the bundled script. See **Install** for installation through the `skills` CLI.
 
 The bare `discover` form finds nothing — `-s tests` is required. Tests never invoke a real model: a fake harness under `tests/fixtures/` stands in, and the ledger is redirected to a temporary file for every test.
 
-To see the exact command a reviewer would run, without running it:
+To see the exact command a reviewer would run from this checkout, without running it:
 
 ```
-cross-agent-review claude-opus-5 my-app "the goal" "the branch" --dry-run
+python3 skills/cross-agent-review/scripts/cross-agent-review claude-opus-5 my-app "the goal" "the branch" --dry-run
 ```
 
 ### Manual smoke check
 
 Automated tests never spend money. Once, by hand, against live models:
 
-`claude-opus-5` is the author to use: it routes to codex plus a claude reviewer, so it
-exercises both harnesses. `gpt-5.6-sol` routes only to claude reviewers.
+With the routing shown above, run once as a Claude author to exercise codex and OpenCode, then once as a GPT/Codex author to exercise Claude and OpenCode.
 
 ```
 cd some-repo-with-changes
-cross-agent-review claude-opus-5 "$(basename "$PWD")" "the goal" "the uncommitted changes"
+python3 /path/to/cross-agent-review/skills/cross-agent-review/scripts/cross-agent-review claude-opus-5 "$(basename "$PWD")" "the goal" "the uncommitted changes"
+python3 /path/to/cross-agent-review/skills/cross-agent-review/scripts/cross-agent-review gpt-5.6-sol "$(basename "$PWD")" "the goal" "the uncommitted changes"
 sqlite3 ~/.local/share/cross-agent-review/reviews.db "SELECT project, reviewer, status, grade FROM reviews ORDER BY id DESC LIMIT 5"
 ```
 
-Expect two reviews on stdout and two rows with `status = ok` and a grade.
+Expect two ledger rows per invocation. Successful reviewers produce output with `status = ok` and a grade; a failed or timed-out reviewer gets its own explicit status without withholding the other review. The Ox Alpha preview accepted the configured provider/model ID in the latest live smoke test but emitted no events before it was interrupted, so its command and protocol are covered but a successful live review has not yet been observed.
 
 ## Schema changes
 
-The ledger carries a `user_version` stamp. An older database is migrated in place on open (`MIGRATIONS` in `bin/cross-agent-review`); rows recorded before a column existed keep a NULL for it. A database written by a *newer* version is refused rather than relabelled, and the tool degrades to a warning rather than losing the review.
+The ledger carries a `user_version` stamp. An older database is migrated in place on open (`MIGRATIONS` in `skills/cross-agent-review/scripts/cross-agent-review`); rows recorded before a column existed keep a NULL for it. A database written by a *newer* version is refused rather than relabelled, and the tool degrades to a warning rather than losing the review.
 
 ## Known limits
 
 - `SIGKILL` on the tool itself leaks the reviewer subprocesses. `SIGINT` and `SIGTERM` are handled: reviewers are killed and the tool exits in milliseconds, though the interrupt path skips cleanup of codex's empty temp file in `/tmp`.
 - A reviewer that escapes its process group by starting its own session survives the timeout kill. The drain is bounded so this cannot hang the tool, but the process is leaked.
-- `cost_usd` is recorded only for harnesses that report it — `claude` does, `codex` does not.
-- Reviewers are not sandboxed; the prompt is the only thing stopping a reviewer from changing your working copy. See **Reviewers are not sandboxed** above.
+- `cost_usd` is recorded only for harnesses that report it — `claude` does; `codex` and `opencode` do not.
+- Codex is unsandboxed, and OpenCode's plan agent can still write through shell commands; their prompts are the control against those changes. See **Reviewer permissions** above.

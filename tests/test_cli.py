@@ -1,5 +1,6 @@
 import contextlib
 import io
+import os
 import subprocess
 import unittest
 
@@ -77,6 +78,16 @@ class ExecutableTest(unittest.TestCase):
 
     def test_the_script_is_named_for_the_tool(self):
         self.assertEqual(review_module.SCRIPT.name, review.TOOL_NAME)
+
+    def test_the_script_is_bundled_in_the_skill(self):
+        skill_root = review_module.SCRIPT.parent.parent
+        self.assertTrue((skill_root / "SKILL.md").is_file())
+        self.assertEqual(
+            review_module.SCRIPT, skill_root / "scripts/cross-agent-review"
+        )
+
+    def test_the_bundled_script_is_executable(self):
+        self.assertTrue(os.access(review_module.SCRIPT, os.X_OK))
 
 
 if __name__ == "__main__":

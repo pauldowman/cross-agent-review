@@ -6,6 +6,7 @@ FAKE_HARNESS_MODE selects the behavior:
   echo_both write FAKE_HARNESS_OUTPUT to stdout and FAKE_HARNESS_STDERR to stderr
   empty     write nothing and exit 0
   nonzero   write to stderr and exit 3
+  nonzero_both write configured output and stderr, then exit 3
   env       write the inherited REVIEW_ACTIVE value to stdout
   hang      spawn a long-lived grandchild, record its pid in
             FAKE_HARNESS_PIDFILE, then sleep past any sane timeout
@@ -41,6 +42,10 @@ def main():
     elif MODE == "empty":
         pass
     elif MODE == "nonzero":
+        sys.stderr.write("harness failed")
+        return 3
+    elif MODE == "nonzero_both":
+        sys.stdout.write(os.environ.get("FAKE_HARNESS_OUTPUT", DEFAULT_OUTPUT))
         sys.stderr.write("harness failed")
         return 3
     elif MODE == "env":
