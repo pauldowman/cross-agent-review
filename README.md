@@ -2,14 +2,16 @@
 
 Ask other AI agents to review your work.
 
-An AI coding agent runs `review <author> <description>`. The tool picks a set of reviewers for that author, runs each one as a non-interactive subprocess in the author's working directory, returns their review text, and records a grade for each in a local ledger. The author never sees the grades.
+An AI coding agent runs `review <author> <project> <description>`. The tool picks a set of reviewers for that author, runs each one as a non-interactive subprocess in the author's working directory, returns their review text, and records a grade for each in a local ledger. The author never sees the grades.
 
 ```
-review gpt-5.6 "the uncommitted changes"
-review opus5 "the current branch"
-review opus5 "the changes to bin/review"
+review gpt-5.6 reviewer "the uncommitted changes"
+review opus5 reviewer "the current branch"
+review opus5 my-app "the changes to src/auth.ts"
 review --known-authors
 ```
+
+`project` groups the ledger across checkouts and machines; it is expected to be the repository name. It is recorded as given and not checked against the repo, so worktrees and monorepo subdirectories can name themselves whatever is most useful.
 
 The description is a *pointer*, not the thing itself. The reviewer resolves it against the repository — running `git diff`, reading files — so it reviews the real work rather than the author's account of it.
 
@@ -50,10 +52,10 @@ One row per reviewer run, successful or not, at `~/.local/share/review/reviews.d
 
 ```
 sqlite3 ~/.local/share/review/reviews.db \
-  "SELECT author, reviewer, grade, count(*) FROM reviews GROUP BY 1,2,3"
+  "SELECT project, author, reviewer, grade, count(*) FROM reviews GROUP BY 1,2,3,4"
 ```
 
-Columns: `run_id`, `ts`, `author`, `reviewer`, `harness`, `description`, `cwd`, `branch`, `git_sha`, `grade`, `review_text`, `duration_s`, `status`, `cost_usd`. All reviewers of one invocation share a `run_id`. A ledger failure is never allowed to withhold a review that was already paid for — it degrades to a warning on stderr.
+Columns: `run_id`, `ts`, `project`, `author`, `reviewer`, `harness`, `description`, `cwd`, `branch`, `git_sha`, `grade`, `review_text`, `duration_s`, `status`, `cost_usd`. All reviewers of one invocation share a `run_id`. A ledger failure is never allowed to withhold a review that was already paid for — it degrades to a warning on stderr.
 
 Grades are `A`, `B`, `C`, `D`, `F`, plus `NA` when the reviewer could not find what the description pointed at. Grade secrecy is a convention, not a mechanism: the author can read this file.
 
@@ -100,7 +102,7 @@ The bare `discover` form finds nothing — `-s tests` is required. Tests never i
 To see the exact command a reviewer would run, without running it:
 
 ```
-review opus5 "the branch" --dry-run
+review opus5 reviewer "the branch" --dry-run
 ```
 
 ### Manual smoke check
@@ -112,11 +114,15 @@ exercises both harnesses. `gpt-5.6` routes only to claude reviewers.
 
 ```
 cd some-repo-with-changes
-review opus5 "the uncommitted changes"
-sqlite3 ~/.local/share/review/reviews.db "SELECT reviewer, status, grade FROM reviews ORDER BY id DESC LIMIT 5"
+review opus5 "$(basename "$PWD")" "the uncommitted changes"
+sqlite3 ~/.local/share/review/reviews.db "SELECT project, reviewer, status, grade FROM reviews ORDER BY id DESC LIMIT 5"
 ```
 
 Expect two reviews on stdout and two rows with `status = ok` and a grade.
+
+## Schema changes
+
+The ledger carries a `user_version` stamp. An older database is migrated in place on open (`MIGRATIONS` in `bin/review`); rows recorded before a column existed keep a NULL for it. A database written by a *newer* version is refused rather than relabelled, and the tool degrades to a warning rather than losing the review.
 
 ## Known limits
 

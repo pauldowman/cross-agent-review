@@ -2,7 +2,7 @@ import json
 import unittest
 
 import review_module
-from test_spawn import GRADED_REVIEW, LONG_ENOUGH_REVIEW, SpawnTestCase, run_main
+from test_spawn import PROJECT, GRADED_REVIEW, LONG_ENOUGH_REVIEW, SpawnTestCase, run_main
 
 
 def claude_envelope(**fields):
@@ -164,7 +164,7 @@ class ClassifiedRunTest(SpawnTestCase):
 
     def test_a_failed_classification_stops_main_from_printing_a_review(self):
         self.set_env(FAKE_HARNESS_MODE="empty")
-        code, out, err = run_main(self.review, "gpt-5.6", "the branch")
+        code, out, err = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
         self.assertEqual(code, self.review.EXIT_ALL_FAILED)
         self.assertEqual(out, "")
         self.assertIn("empty_output", err)

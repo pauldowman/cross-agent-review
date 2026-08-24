@@ -4,7 +4,7 @@ import unittest
 
 import review_module
 from test_grade import reply
-from test_spawn import SpawnTestCase, run_main
+from test_spawn import PROJECT, SpawnTestCase, run_main
 
 REVIEW_BODY = "The codex reviewer found an unhandled error path in the parser."
 
@@ -85,18 +85,18 @@ class DryRunOfConfiguredReviewersTest(unittest.TestCase):
         pristine = self.review
         for author in pristine.KNOWN_AUTHORS:
             with self.subTest(author=author):
-                code, out, _ = run_main(pristine, author, "the branch", "--dry-run")
+                code, out, _ = run_main(pristine, author, PROJECT, "the branch", "--dry-run")
                 self.assertEqual(code, pristine.EXIT_OK)
                 for reviewer in pristine.REVIEWERS[author]:
                     self.assertIn(reviewer, out)
 
     def test_the_codex_command_shows_where_its_output_goes(self):
-        _, out, _ = run_main(self.review, "opus5", "the branch", "--dry-run")
+        _, out, _ = run_main(self.review, "opus5", PROJECT, "the branch", "--dry-run")
         self.assertIn(f"-o '{self.review.OUTPUT_PLACEHOLDER}'", out)
 
     def test_a_dry_run_creates_no_output_files(self):
         before = set(pathlib.Path(tempfile.gettempdir()).glob("review-*"))
-        run_main(self.review, "opus5", "the branch", "--dry-run")
+        run_main(self.review, "opus5", PROJECT, "the branch", "--dry-run")
         self.assertEqual(
             set(pathlib.Path(tempfile.gettempdir()).glob("review-*")) - before, set()
         )

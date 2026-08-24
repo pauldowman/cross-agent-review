@@ -151,7 +151,7 @@ MIN_REVIEW_CHARS = 20
 ACTIVE_ENV_VAR = "REVIEW_ACTIVE"
 TIMEOUT_ENV_VAR = "REVIEW_TIMEOUT"
 DB_ENV_VAR = "REVIEW_DB"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 BUSY_TIMEOUT_SECONDS = 5
 DEFAULT_TIMEOUT_SECONDS = 240
 DRAIN_TIMEOUT_SECONDS = 5
@@ -165,7 +165,7 @@ ReviewerRun = namedtuple(
 Extracted = namedtuple("Extracted", "text cost_usd error")
 
 Invocation = namedtuple(
-    "Invocation", "run_id ts author description cwd branch git_sha"
+    "Invocation", "run_id ts project author description cwd branch git_sha"
 )
 
 SCHEMA = """
@@ -173,6 +173,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL,
     ts TEXT NOT NULL,
+    project TEXT NOT NULL,
     author TEXT NOT NULL,
     reviewer TEXT NOT NULL,
     harness TEXT NOT NULL,
@@ -187,6 +188,12 @@ CREATE TABLE IF NOT EXISTS reviews (
     cost_usd REAL
 )
 """
+
+# Applied in order to bring an older database up to SCHEMA_VERSION. Rows
+# recorded before a column existed keep a NULL for it.
+MIGRATIONS = {
+    2: ("ALTER TABLE reviews ADD COLUMN project TEXT",),
+}
 
 
 class ConfigurationError(Exception):
@@ -619,6 +626,11 @@ def build_parser():
     )
     parser.add_argument("author", nargs="?", help="the AI model that produced the work")
     parser.add_argument(
+        "project",
+        nargs="?",
+        help="the project this work belongs to, normally the repository name",
+    )
+    parser.add_argument(
         "description",
         nargs="?",
         help="what to review, e.g. 'the uncommitted changes' or 'agent-planning/01-review-tool.md'",
@@ -652,8 +664,8 @@ def main(argv=None):
         )
         return EXIT_RECURSION
 
-    if not args.author or not args.description:
-        parser.error("author and description are both required")
+    if not (args.author and args.project and args.description):
+        parser.error("author, project, and description are all required")
 
     author = resolve_author(args.author)
     if author is None:
@@ -684,7 +696,7 @@ def main(argv=None):
             print(f"{reviewer}: {shlex.join(argv)}")
         return EXIT_OK
 
-    invocation = describe_invocation(author, args.description)
+    invocation = describe_invocation(args.project, author, args.description)
     if review_all(reviewers, prompt, timeout, invocation):
         return EXIT_OK
 
@@ -768,20 +780,25 @@ def open_database(path=None):
 
 
 def prepare_schema(connection):
-    """Create the schema on a new database; refuse an unfamiliar one.
+    """Create, migrate, or refuse the database this tool was pointed at.
 
-    The stamp describes the file, not the code that opened it, so it is only
-    written once. Overwriting it on every open would let an old binary
-    silently relabel a newer database.
+    The stamp describes the file, not the code that opened it. A newer file
+    is refused rather than relabelled, since an old binary cannot know what
+    a later schema means.
     """
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     if version == 0:
         connection.execute(SCHEMA)
-        connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-    elif version != SCHEMA_VERSION:
+    elif version > SCHEMA_VERSION:
         raise sqlite3.DatabaseError(
-            f"schema version {version} is not the {SCHEMA_VERSION} this tool writes"
+            f"schema version {version} is newer than the {SCHEMA_VERSION} "
+            "this tool writes"
         )
+    else:
+        for target in range(version + 1, SCHEMA_VERSION + 1):
+            for statement in MIGRATIONS[target]:
+                connection.execute(statement)
+    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
 
 def git_output(*args):
@@ -799,10 +816,11 @@ def git_output(*args):
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def describe_invocation(author, description):
+def describe_invocation(project, author, description):
     return Invocation(
         run_id=secrets.token_hex(8),
         ts=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        project=project,
         author=author,
         description=description,
         cwd=os.getcwd(),
@@ -829,12 +847,14 @@ def record_run(connection, invocation, run):
 
 def insert_run(connection, invocation, run):
     connection.execute(
-        "INSERT INTO reviews (run_id, ts, author, reviewer, harness, description,"
-        " cwd, branch, git_sha, grade, review_text, duration_s, status, cost_usd)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO reviews (run_id, ts, project, author, reviewer, harness,"
+        " description, cwd, branch, git_sha, grade, review_text, duration_s,"
+        " status, cost_usd)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             invocation.run_id,
             invocation.ts,
+            invocation.project,
             invocation.author,
             run.reviewer,
             run.family,
