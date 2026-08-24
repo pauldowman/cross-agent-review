@@ -11,7 +11,7 @@ from unittest import mock
 
 import review_module
 from test_grade import reply
-from test_spawn import PROJECT, LONG_ENOUGH_REVIEW, SpawnTestCase, run_main
+from test_spawn import GOAL, PROJECT, LONG_ENOUGH_REVIEW, SpawnTestCase, run_main
 
 
 def rows(path):
@@ -31,7 +31,7 @@ class DatabasePathTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop(self.review.DB_ENV_VAR, None)
             os.environ.pop("XDG_DATA_HOME", None)
-            expected = pathlib.Path.home() / ".local/share/review/reviews.db"
+            expected = pathlib.Path.home() / ".local/share/cross-agent-review/reviews.db"
             self.assertEqual(self.review.database_path(), expected)
 
     def test_xdg_data_home_is_honored(self):
@@ -39,7 +39,7 @@ class DatabasePathTest(unittest.TestCase):
             os.environ.pop(self.review.DB_ENV_VAR, None)
             self.assertEqual(
                 self.review.database_path(),
-                pathlib.Path("/somewhere/data/review/reviews.db"),
+                pathlib.Path("/somewhere/data/cross-agent-review/reviews.db"),
             )
 
     def test_the_explicit_override_wins(self):
@@ -74,8 +74,8 @@ class SchemaTest(unittest.TestCase):
             connection = self.review.open_database(path)
             connection.execute(
                 "INSERT INTO reviews (run_id, ts, project, author, reviewer,"
-                " harness, description, cwd, status)"
-                " VALUES ('r','t','p','a','v','h','d','c','ok')"
+                " harness, goal, description, cwd, status)"
+                " VALUES ('r','t','p','a','v','h','g','d','c','ok')"
             )
             connection.commit()
             connection.close()
@@ -145,7 +145,7 @@ class MigrationTest(SpawnTestCase):
         self.write_v1_database()
         self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=reply("A"))
 
-        code, _, _ = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, _, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         self.assertEqual(code, self.review.EXIT_OK)
         recorded = rows(self.db_path)
@@ -162,7 +162,7 @@ class MigrationTest(SpawnTestCase):
 class ProjectTest(SpawnTestCase):
     def test_the_project_is_recorded(self):
         self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=reply("B"))
-        run_main(self.review, "gpt-5.6", "some-other-repo", "the branch")
+        run_main(self.review, "gpt-5.6", "some-other-repo", GOAL, "the branch")
 
         (row,) = rows(self.db_path)
         self.assertEqual(row["project"], "some-other-repo")
@@ -177,7 +177,7 @@ class ProjectTest(SpawnTestCase):
     def test_every_reviewer_of_one_invocation_shares_the_project(self):
         self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=reply("B"))
         connection = self.review.open_database(self.db_path)
-        invocation = self.review.describe_invocation(PROJECT, "gpt-5.6", "x")
+        invocation = self.review.describe_invocation(PROJECT, "gpt-5.6", GOAL, "x")
         for reviewer in ("first", "second"):
             self.review.record_run(
                 connection,
@@ -200,7 +200,7 @@ class ProjectTest(SpawnTestCase):
 class RunIdTest(SpawnTestCase):
     def test_every_reviewer_of_one_invocation_shares_a_run_id(self):
         connection = self.review.open_database(self.db_path)
-        invocation = self.review.describe_invocation(PROJECT, "gpt-5.6", "the branch")
+        invocation = self.review.describe_invocation(PROJECT, "gpt-5.6", GOAL, "the branch")
         for reviewer in ("first", "second", "third"):
             self.review.record_run(
                 connection,
@@ -234,7 +234,7 @@ class DatabaseFailureTest(SpawnTestCase):
             FAKE_HARNESS_MODE="echo",
             FAKE_HARNESS_OUTPUT=reply("B"),
         )
-        code, out, err = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, out, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn("retry loop", out)
         self.assertIn("not recording", err)
@@ -243,7 +243,7 @@ class DatabaseFailureTest(SpawnTestCase):
         self.db_path.write_text("this is not a sqlite database at all")
         self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=reply("B"))
 
-        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn("retry loop", out)
 
@@ -271,7 +271,7 @@ class DatabaseFailureTest(SpawnTestCase):
             stderr="",
             duration_s=1.0,
         )
-        invocation = self.review.describe_invocation(PROJECT, "gpt-5.6", "the branch")
+        invocation = self.review.describe_invocation(PROJECT, "gpt-5.6", GOAL, "the branch")
         self.assertFalse(self.review.record_run(None, invocation, run))
 
 
@@ -281,7 +281,7 @@ class RecordedRunTest(SpawnTestCase):
 
     def test_a_successful_review_is_recorded_in_full(self):
         self.echo(reply("B"))
-        run_main(self.review, "gpt-5.6", PROJECT, "the uncommitted changes")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the uncommitted changes")
 
         (row,) = rows(self.db_path)
         self.assertEqual(row["author"], "gpt-5.6")
@@ -298,7 +298,7 @@ class RecordedRunTest(SpawnTestCase):
 
     def test_the_repository_position_is_recorded(self):
         self.echo(reply("A"))
-        run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         (row,) = rows(self.db_path)
         expected = subprocess.run(
@@ -316,7 +316,7 @@ class RecordedRunTest(SpawnTestCase):
             self.addCleanup(os.chdir, original)
 
             self.echo(reply("A"))
-            run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+            run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
             (row,) = rows(self.db_path)
             self.assertIsNone(row["branch"])
@@ -325,7 +325,7 @@ class RecordedRunTest(SpawnTestCase):
 
     def test_the_grade_is_recorded_even_though_it_is_never_printed(self):
         self.echo(reply("D"))
-        _, out, _ = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        _, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         (row,) = rows(self.db_path)
         self.assertEqual(row["grade"], "D")
@@ -333,7 +333,7 @@ class RecordedRunTest(SpawnTestCase):
 
     def test_the_not_found_sentinel_is_recorded_as_its_grade(self):
         self.echo(reply("NA", "I could not find the branch you named anywhere."))
-        run_main(self.review, "gpt-5.6", PROJECT, "a branch that does not exist")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "a branch that does not exist")
 
         (row,) = rows(self.db_path)
         self.assertEqual(row["grade"], self.review.NOT_FOUND_GRADE)
@@ -341,7 +341,7 @@ class RecordedRunTest(SpawnTestCase):
 
     def test_an_unparsable_reply_is_recorded_with_no_grade(self):
         self.echo(LONG_ENOUGH_REVIEW)
-        run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         (row,) = rows(self.db_path)
         self.assertEqual(row["status"], self.review.STATUS_UNPARSED)
@@ -355,7 +355,7 @@ class RecordedRunTest(SpawnTestCase):
         ):
             with self.subTest(mode=mode):
                 self.set_env(FAKE_HARNESS_MODE=mode)
-                run_main(self.review, "gpt-5.6", PROJECT, f"the branch via {mode}")
+                run_main(self.review, "gpt-5.6", PROJECT, GOAL, f"the branch via {mode}")
 
                 (row,) = [
                     r for r in rows(self.db_path) if r["description"].endswith(mode)
@@ -368,7 +368,7 @@ class RecordedRunTest(SpawnTestCase):
         self.use_fake_harness(
             argv=("/nonexistent/harness", self.review.PROMPT_PLACEHOLDER)
         )
-        run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         (row,) = rows(self.db_path)
         self.assertEqual(row["status"], self.review.STATUS_HARNESS_MISSING)
@@ -381,7 +381,7 @@ class RecordedRunTest(SpawnTestCase):
                 FAKE_HARNESS_PIDFILE=str(pathlib.Path(tmp) / "pid"),
                 REVIEW_TIMEOUT="1",
             )
-            run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+            run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         (row,) = rows(self.db_path)
         self.assertEqual(row["status"], self.review.STATUS_TIMEOUT)
@@ -391,7 +391,7 @@ class RecordedRunTest(SpawnTestCase):
     def test_a_self_reported_harness_error_is_recorded(self):
         self.use_fake_harness(family="claude")
         self.echo(json.dumps({"result": "out of credit", "is_error": True}))
-        run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         (row,) = rows(self.db_path)
         self.assertEqual(row["status"], self.review.STATUS_HARNESS_ERROR)
@@ -400,23 +400,23 @@ class RecordedRunTest(SpawnTestCase):
     def test_cost_is_recorded_when_the_harness_reports_it(self):
         self.use_fake_harness(family="claude")
         self.echo(json.dumps({"result": reply("A"), "total_cost_usd": 0.0412}))
-        run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         (row,) = rows(self.db_path)
         self.assertEqual(row["cost_usd"], 0.0412)
 
     def test_a_harness_without_cost_reporting_records_null(self):
         self.echo(reply("A"))
-        run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         (row,) = rows(self.db_path)
         self.assertIsNone(row["cost_usd"])
 
     def test_successive_invocations_append_rather_than_replace(self):
         self.echo(reply("A"))
-        run_main(self.review, "gpt-5.6", PROJECT, "the first review")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the first review")
         self.echo(reply("C"))
-        run_main(self.review, "gpt-5.6", PROJECT, "the second review")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the second review")
 
         recorded = rows(self.db_path)
         self.assertEqual(len(recorded), 2)

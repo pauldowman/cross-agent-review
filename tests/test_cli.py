@@ -6,7 +6,9 @@ import unittest
 import review_module
 
 review = review_module.load()
+
 PROJECT = "reviewer"
+GOAL = "add a review tool"
 
 
 def run(*argv):
@@ -17,83 +19,64 @@ def run(*argv):
     return code, out.getvalue(), err.getvalue()
 
 
-class KnownAuthorsTest(unittest.TestCase):
-    def test_lists_every_author_with_its_aliases(self):
-        code, out, _ = run("--known-authors")
-        self.assertEqual(code, 0)
-        for author, aliases in review.KNOWN_AUTHORS.items():
-            self.assertIn(author, out)
-            for alias in aliases:
-                self.assertIn(alias, out)
+class AnyAuthorTest(unittest.TestCase):
+    """A model names itself; the tool records whatever it is told."""
 
-    def test_takes_precedence_over_a_review_request(self):
-        code, out, _ = run("opus5", PROJECT, "the uncommitted changes", "--known-authors")
-        self.assertEqual(code, 0)
-        self.assertIn("Known authors:", out)
+    def test_an_unrecognized_model_name_is_accepted(self):
+        code, out, _ = run(
+            "some-model-nobody-configured-7", PROJECT, GOAL, "x", "--dry-run"
+        )
+        self.assertEqual(code, review.EXIT_OK)
+        self.assertTrue(out)
 
+    def test_a_model_name_with_unusual_characters_is_accepted(self):
+        code, _, _ = run("vendor/model:2026-08@preview", PROJECT, GOAL, "x", "--dry-run")
+        self.assertEqual(code, review.EXIT_OK)
 
-class AuthorValidationTest(unittest.TestCase):
-    def test_unknown_author_points_at_known_authors(self):
-        code, _, err = run("gpt-2", PROJECT, "the uncommitted changes")
-        self.assertEqual(code, 2)
-        self.assertIn("gpt-2", err)
-        self.assertIn("review --known-authors", err)
+    def test_surrounding_whitespace_is_trimmed(self):
+        code, _, _ = run("  claude-opus-5  ", PROJECT, GOAL, "x", "--dry-run")
+        self.assertEqual(code, review.EXIT_OK)
 
-    def test_canonical_author_is_accepted(self):
-        code, _, _ = run("gpt-5.6", PROJECT, "the uncommitted changes", "--dry-run")
-        self.assertEqual(code, 0)
-
-    def test_alias_resolves_to_canonical_author(self):
-        self.assertEqual(review.resolve_author("opus5"), "claude-opus-5")
-        code, _, _ = run("gpt5", PROJECT, "the uncommitted changes", "--dry-run")
-        self.assertEqual(code, 0)
-
-    def test_author_matching_ignores_case_and_surrounding_space(self):
-        self.assertEqual(review.resolve_author("  Claude-Opus-5 "), "claude-opus-5")
-
-    def test_unknown_author_resolves_to_none(self):
-        self.assertIsNone(review.resolve_author("gpt-2"))
-
-
-class AliasIndexTest(unittest.TestCase):
-    def test_every_configured_name_and_alias_resolves(self):
-        for author, aliases in review.KNOWN_AUTHORS.items():
-            self.assertEqual(review.resolve_author(author), author)
-            for alias in aliases:
-                self.assertEqual(review.resolve_author(alias), author)
-
-    def test_alias_may_not_shadow_another_authors_canonical_name(self):
-        with self.assertRaises(ValueError):
-            review.build_alias_index({"gpt-5.6": ("codex",), "codex": ()})
-
-    def test_duplicate_alias_across_authors_is_rejected(self):
-        with self.assertRaises(ValueError):
-            review.build_alias_index({"gpt-5.6": ("gpt",), "glm-5.2": ("gpt",)})
+    def test_the_help_text_asks_for_a_precise_versioned_name(self):
+        help_text = review.build_parser().format_help()
+        self.assertIn("precise model name", help_text)
+        self.assertIn("including its version", help_text)
 
 
 class UsageTest(unittest.TestCase):
-    def test_missing_description_is_a_usage_error(self):
-        with contextlib.redirect_stderr(io.StringIO()):
+    def assert_usage_error(self, *argv):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
             with self.assertRaises(SystemExit) as raised:
-                review.main(["claude-opus-5", PROJECT])
+                review.main(list(argv))
         self.assertEqual(raised.exception.code, 2)
+        return err.getvalue()
 
-    def test_no_arguments_at_all_is_a_usage_error(self):
-        with contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as raised:
-                review.main([])
-        self.assertEqual(raised.exception.code, 2)
+    def test_every_positional_is_required(self):
+        for argv in (
+            [],
+            ["claude-opus-5"],
+            ["claude-opus-5", PROJECT],
+            ["claude-opus-5", PROJECT, GOAL],
+        ):
+            with self.subTest(argv=argv):
+                self.assertIn("required", self.assert_usage_error(*argv))
+
+    def test_the_error_names_all_four_arguments(self):
+        message = self.assert_usage_error()
+        for name in ("author", "project", "goal", "description"):
+            self.assertIn(name, message)
 
 
 class ExecutableTest(unittest.TestCase):
-    def test_running_the_script_exits_2_on_an_unknown_author(self):
+    def test_running_the_script_reports_a_usage_error_without_arguments(self):
         result = subprocess.run(
-            [str(review_module.SCRIPT), "gpt-2", PROJECT, "the uncommitted changes"],
-            capture_output=True,
-            text=True,
+            [str(review_module.SCRIPT)], capture_output=True, text=True
         )
         self.assertEqual(result.returncode, 2)
-        self.assertIn("review --known-authors", result.stderr)
+        self.assertIn("required", result.stderr)
+
+    def test_the_script_is_named_for_the_tool(self):
+        self.assertEqual(review_module.SCRIPT.name, review.TOOL_NAME)
 
 
 if __name__ == "__main__":

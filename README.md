@@ -1,27 +1,30 @@
-# review
+# cross-agent-review
 
 Ask other AI agents to review your work.
 
-An AI coding agent runs `review <author> <project> <description>`. The tool picks a set of reviewers for that author, runs each one as a non-interactive subprocess in the author's working directory, returns their review text, and records a grade for each in a local ledger. The author never sees the grades.
+An AI coding agent runs `cross-agent-review <author> <project> <goal> <description>`. The tool picks a set of reviewers for that author, runs each one as a non-interactive subprocess in the author's working directory, returns their review text, and records a grade for each in a local ledger. The author never sees the grades.
 
 ```
-review gpt-5.6 reviewer "the uncommitted changes"
-review opus5 reviewer "the current branch"
-review opus5 my-app "the changes to src/auth.ts"
-review --known-authors
+cross-agent-review claude-opus-5 my-app "add cursor pagination" "the uncommitted changes"
+cross-agent-review gpt-5.6-sol my-app "fix the retry backoff" "the current branch"
 ```
 
-`project` groups the ledger across checkouts and machines; it is expected to be the repository name. It is recorded as given and not checked against the repo, so worktrees and monorepo subdirectories can name themselves whatever is most useful.
+| argument | meaning |
+|---|---|
+| `author` | the model name of the agent that did the work, precise and including its version. Any string is accepted — a model names itself — and it selects the reviewers. |
+| `project` | the repository name. Groups the ledger across checkouts and machines; recorded as given, never checked against the repo, so worktrees and monorepo subdirectories can name themselves usefully. |
+| `goal` | what the work was trying to achieve. Reviewers grade against it — `D` in the rubric is "misunderstands the goal". |
+| `description` | what to review. |
 
 The description is a *pointer*, not the thing itself. The reviewer resolves it against the repository — running `git diff`, reading files — so it reviews the real work rather than the author's account of it.
 
 ## Install
 
 ```
-ln -s "$PWD/bin/review" ~/.local/bin/review
+ln -s "$PWD/bin/cross-agent-review" ~/.local/bin/cross-agent-review
 ```
 
-Single-file Python 3, standard library only. Requires the harnesses it routes to: `claude` and `codex`. Both the model and codex's reasoning effort are pinned in `bin/review`, so a reviewer never silently inherits whatever your config last set.
+Single-file Python 3, standard library only. Requires the harnesses it routes to: `claude` and `codex`. Both the model and codex's reasoning effort are pinned in `bin/cross-agent-review`, so a reviewer never silently inherits whatever your config last set.
 
 ## Calling it from an agent
 
@@ -43,25 +46,42 @@ stdout carries the reviews, each in a delimited block. stderr carries diagnostic
 | variable | default | meaning |
 |---|---|---|
 | `REVIEW_TIMEOUT` | 240 | seconds allowed per reviewer |
-| `REVIEW_DB` | `$XDG_DATA_HOME/review/reviews.db` | ledger location |
+| `REVIEW_DB` | `$XDG_DATA_HOME/cross-agent-review/reviews.db` | ledger location |
+| `CROSS_AGENT_REVIEW_CONFIG` | `$XDG_CONFIG_HOME/cross-agent-review/reviewers.toml` | routing rules |
 | `REVIEW_ACTIVE` | unset | set in reviewer subprocesses; the tool refuses to run when it is set |
 
 ## The ledger
 
-One row per reviewer run, successful or not, at `~/.local/share/review/reviews.db`:
+One row per reviewer run, successful or not, at `~/.local/share/cross-agent-review/reviews.db`:
 
 ```
-sqlite3 ~/.local/share/review/reviews.db \
+sqlite3 ~/.local/share/cross-agent-review/reviews.db \
   "SELECT project, author, reviewer, grade, count(*) FROM reviews GROUP BY 1,2,3,4"
 ```
 
-Columns: `run_id`, `ts`, `project`, `author`, `reviewer`, `harness`, `description`, `cwd`, `branch`, `git_sha`, `grade`, `review_text`, `duration_s`, `status`, `cost_usd`. All reviewers of one invocation share a `run_id`. A ledger failure is never allowed to withhold a review that was already paid for — it degrades to a warning on stderr.
+Columns: `run_id`, `ts`, `project`, `author`, `goal`, `reviewer`, `harness`, `description`, `cwd`, `branch`, `git_sha`, `grade`, `review_text`, `duration_s`, `status`, `cost_usd`. All reviewers of one invocation share a `run_id`. A ledger failure is never allowed to withhold a review that was already paid for — it degrades to a warning on stderr.
 
 Grades are `A`, `B`, `C`, `D`, `F`, plus `NA` when the reviewer could not find what the description pointed at. Grade secrecy is a convention, not a mechanism: the author can read this file.
 
-## Reviewers
+## Configuring who reviews whom
 
-`KNOWN_AUTHORS`, `AUTHOR_FAMILY`, `REVIEWERS`, and `HARNESS` at the top of `bin/review` are the whole configuration. A new author needs an entry in the first three. Each harness key names the model it runs, so an entry cannot drift from its key.
+Routing lives in `$XDG_CONFIG_HOME/cross-agent-review/reviewers.toml` (default `~/.config/cross-agent-review/reviewers.toml`). There is no built-in fallback: if the file is missing the tool exits 2 and prints the location together with a complete, copy-pasteable example.
+
+```toml
+[[rule]]
+pattern = "^claude-opus"
+reviewers = ["codex-gpt-5.6-sol", "claude-sonnet-5"]
+
+[[rule]]
+pattern = "."
+reviewers = ["codex-gpt-5.6-sol", "claude-opus-5"]
+```
+
+Each `pattern` is a regular expression matched case-insensitively anywhere in the author's model name. **The first matching rule wins**, so order specific rules before general ones and end with a catch-all — an author matching no rule is an error. `reviewers` names entries from the `HARNESS` table in the script, which is still code: adding a *reviewer* means adding a harness there, while deciding *who reviews whom* is configuration.
+
+Route each author away from its own model, or it reviews itself.
+
+`HARNESS` at the top of `bin/cross-agent-review` defines the available reviewers. Each key names the model it runs, so an entry cannot drift from its key.
 
 ### Reviewers are not sandboxed
 
@@ -97,32 +117,34 @@ If that returns promptly, add an `opencode` entry to `HARNESS` with an extractor
 python3 -m unittest discover -s tests
 ```
 
+There is also a `cross-agent-review` skill at `~/.claude/skills/cross-agent-review/` telling agents how to call this.
+
 The bare `discover` form finds nothing — `-s tests` is required. Tests never invoke a real model: a fake harness under `tests/fixtures/` stands in, and the ledger is redirected to a temporary file for every test.
 
 To see the exact command a reviewer would run, without running it:
 
 ```
-review opus5 reviewer "the branch" --dry-run
+cross-agent-review claude-opus-5 my-app "the goal" "the branch" --dry-run
 ```
 
 ### Manual smoke check
 
 Automated tests never spend money. Once, by hand, against live models:
 
-`opus5` is the author to use: it routes to codex plus a claude reviewer, so it
-exercises both harnesses. `gpt-5.6` routes only to claude reviewers.
+`claude-opus-5` is the author to use: it routes to codex plus a claude reviewer, so it
+exercises both harnesses. `gpt-5.6-sol` routes only to claude reviewers.
 
 ```
 cd some-repo-with-changes
-review opus5 "$(basename "$PWD")" "the uncommitted changes"
-sqlite3 ~/.local/share/review/reviews.db "SELECT project, reviewer, status, grade FROM reviews ORDER BY id DESC LIMIT 5"
+cross-agent-review claude-opus-5 "$(basename "$PWD")" "the goal" "the uncommitted changes"
+sqlite3 ~/.local/share/cross-agent-review/reviews.db "SELECT project, reviewer, status, grade FROM reviews ORDER BY id DESC LIMIT 5"
 ```
 
 Expect two reviews on stdout and two rows with `status = ok` and a grade.
 
 ## Schema changes
 
-The ledger carries a `user_version` stamp. An older database is migrated in place on open (`MIGRATIONS` in `bin/review`); rows recorded before a column existed keep a NULL for it. A database written by a *newer* version is refused rather than relabelled, and the tool degrades to a warning rather than losing the review.
+The ledger carries a `user_version` stamp. An older database is migrated in place on open (`MIGRATIONS` in `bin/cross-agent-review`); rows recorded before a column existed keep a NULL for it. A database written by a *newer* version is refused rather than relabelled, and the tool degrades to a warning rather than losing the review.
 
 ## Known limits
 

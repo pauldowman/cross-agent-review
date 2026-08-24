@@ -18,16 +18,9 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import traceback
 from collections import namedtuple
-
-KNOWN_AUTHORS = {
-    "claude-opus-5": ("opus", "opus5"),
-    "claude-sonnet-5": ("sonnet", "sonnet5"),
-    "claude-fable-5": ("fable", "fable5"),
-    "gpt-5.6": ("gpt", "gpt5", "codex"),
-    "glm-5.2": ("glm", "glm5"),
-}
 
 PROMPT_PLACEHOLDER = "<prompt>"
 OUTPUT_PLACEHOLDER = "<output-file>"
@@ -95,23 +88,33 @@ HARNESS = {
     f"codex-{CODEX_MODEL}": codex_harness(CODEX_MODEL),
 }
 
-AUTHOR_FAMILY = {
-    "claude-opus-5": "claude",
-    "claude-sonnet-5": "claude",
-    "claude-fable-5": "claude",
-    "gpt-5.6": "codex",
-    "glm-5.2": "opencode",
-}
+EXAMPLE_CONFIG = f"""# Which reviewers review which author, for cross-agent-review.
+#
+# Each rule's `pattern` is a regular expression, matched case-insensitively
+# against the author's model name. The first matching rule wins, so put the
+# specific rules first and finish with a catch-all. `reviewers` names entries
+# from the HARNESS table in the cross-agent-review script:
+#   {", ".join(sorted(HARNESS))}
+#
+# Route an author away from its own model, or it reviews itself.
 
-# Who reviews whom. Nobody reviews themselves, and every author gets at
-# least one reviewer running under a different harness.
-REVIEWERS = {
-    "claude-opus-5": (f"codex-{CODEX_MODEL}", "claude-sonnet-5"),
-    "claude-sonnet-5": (f"codex-{CODEX_MODEL}", "claude-opus-5"),
-    "claude-fable-5": (f"codex-{CODEX_MODEL}", "claude-opus-5"),
-    "gpt-5.6": ("claude-opus-5", "claude-sonnet-5"),
-    "glm-5.2": (f"codex-{CODEX_MODEL}", "claude-opus-5"),
-}
+[[rule]]
+pattern = "^claude-opus"
+reviewers = ["codex-{CODEX_MODEL}", "claude-sonnet-5"]
+
+[[rule]]
+pattern = "^claude"
+reviewers = ["codex-{CODEX_MODEL}", "claude-opus-5"]
+
+[[rule]]
+pattern = "^gpt|^codex"
+reviewers = ["claude-opus-5", "claude-sonnet-5"]
+
+[[rule]]
+pattern = "."
+reviewers = ["codex-{CODEX_MODEL}", "claude-opus-5"]
+"""
+
 
 EXIT_OK = 0
 EXIT_USAGE = 2
@@ -148,10 +151,12 @@ PARSE_NOTICES = {
 # this check must stay on the pre-parse text to keep catching that case.
 MIN_REVIEW_CHARS = 20
 
+TOOL_NAME = "cross-agent-review"
+CONFIG_ENV_VAR = "CROSS_AGENT_REVIEW_CONFIG"
 ACTIVE_ENV_VAR = "REVIEW_ACTIVE"
 TIMEOUT_ENV_VAR = "REVIEW_TIMEOUT"
 DB_ENV_VAR = "REVIEW_DB"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BUSY_TIMEOUT_SECONDS = 5
 DEFAULT_TIMEOUT_SECONDS = 240
 DRAIN_TIMEOUT_SECONDS = 5
@@ -165,7 +170,7 @@ ReviewerRun = namedtuple(
 Extracted = namedtuple("Extracted", "text cost_usd error")
 
 Invocation = namedtuple(
-    "Invocation", "run_id ts project author description cwd branch git_sha"
+    "Invocation", "run_id ts project author goal description cwd branch git_sha"
 )
 
 SCHEMA = """
@@ -177,6 +182,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     author TEXT NOT NULL,
     reviewer TEXT NOT NULL,
     harness TEXT NOT NULL,
+    goal TEXT NOT NULL,
     description TEXT NOT NULL,
     cwd TEXT NOT NULL,
     branch TEXT,
@@ -193,11 +199,83 @@ CREATE TABLE IF NOT EXISTS reviews (
 # recorded before a column existed keep a NULL for it.
 MIGRATIONS = {
     2: ("ALTER TABLE reviews ADD COLUMN project TEXT",),
+    3: ("ALTER TABLE reviews ADD COLUMN goal TEXT",),
 }
 
 
 class ConfigurationError(Exception):
     """The environment asks for something this tool cannot honor."""
+
+
+def config_path():
+    override = os.environ.get(CONFIG_ENV_VAR)
+    if override:
+        return pathlib.Path(override)
+    config_home = os.environ.get("XDG_CONFIG_HOME") or pathlib.Path.home() / ".config"
+    return pathlib.Path(config_home) / TOOL_NAME / "reviewers.toml"
+
+
+def load_rules(path=None):
+    """Read the routing rules, as a list of (compiled pattern, reviewers).
+
+    There is no built-in fallback on purpose: who reviews whom is the one
+    judgement this tool cannot make for you, so a missing or unusable config
+    is an error that explains itself rather than a silent default.
+    """
+    path = config_path() if path is None else pathlib.Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ConfigurationError(
+            f"no reviewer configuration at {path} ({error.strerror}).\n"
+            f"Create it with:\n\n"
+            f"    mkdir -p {path.parent}\n"
+            f"    cat > {path} <<'EOF'\n{EXAMPLE_CONFIG}EOF"
+        )
+    try:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise ConfigurationError(f"{path} is not valid TOML: {error}")
+
+    rules = parsed.get("rule")
+    if not rules:
+        raise ConfigurationError(
+            f"{path} defines no [[rule]] entries. Each rule needs a `pattern` "
+            f"and a `reviewers` list; see the example in the README."
+        )
+    return [parse_rule(rule, index, path) for index, rule in enumerate(rules, 1)]
+
+
+def parse_rule(rule, index, path):
+    where = f"rule {index} in {path}"
+    pattern, reviewers = rule.get("pattern"), rule.get("reviewers")
+    if not isinstance(pattern, str) or not pattern:
+        raise ConfigurationError(f"{where} needs a non-empty `pattern` string")
+    if not isinstance(reviewers, list) or not reviewers:
+        raise ConfigurationError(f"{where} needs a non-empty `reviewers` list")
+
+    unknown = [name for name in reviewers if name not in HARNESS]
+    if unknown:
+        raise ConfigurationError(
+            f"{where} names unknown reviewers {', '.join(map(repr, unknown))}. "
+            f"Known reviewers: {', '.join(sorted(HARNESS))}"
+        )
+    try:
+        compiled = re.compile(pattern, re.IGNORECASE)
+    except re.error as error:
+        raise ConfigurationError(f"{where} has an invalid pattern: {error}")
+    return compiled, tuple(reviewers)
+
+
+def reviewers_for(author, rules):
+    """The first rule whose pattern matches the author's model name."""
+    for pattern, reviewers in rules:
+        if pattern.search(author):
+            return reviewers
+    raise ConfigurationError(
+        f"no rule in {config_path()} matches the model name {author!r}. "
+        f"Add a catch-all rule with pattern = \".\" if you want one."
+    )
 
 
 LIVE_PROCESSES = set()
@@ -240,42 +318,11 @@ def install_signal_handlers():
         signal.signal(received, terminate_everything)
 
 
-def build_alias_index(authors):
-    """Map every canonical name and alias to its canonical name.
-
-    Canonical names are registered first so an alias can never shadow one.
-    Collisions are a bug in the hardcoded table and fail loudly.
-    """
-    index = {canonical: canonical for canonical in authors}
-    for canonical, aliases in authors.items():
-        for alias in aliases:
-            if alias in index:
-                raise ValueError(
-                    f"author alias {alias!r} collides with {index[alias]!r}"
-                )
-            index[alias] = canonical
-    return index
-
-
-AUTHOR_ALIASES = build_alias_index(KNOWN_AUTHORS)
-
-
-def resolve_author(name):
-    """Return the canonical author name for a name or alias, or None."""
-    return AUTHOR_ALIASES.get(name.strip().lower())
-
-
-def format_known_authors():
-    lines = ["Known authors:"]
-    for canonical, aliases in KNOWN_AUTHORS.items():
-        lines.append(f"  {canonical} ({', '.join(aliases)})")
-    return "\n".join(lines)
-
-
-def build_prompt(description, cwd):
+def build_prompt(goal, description, cwd):
     return f"""You are reviewing work produced by another AI coding agent.
 
 Working directory: {cwd}
+What the author was trying to achieve: {goal}
 The author asked you to review: {description}
 
 Resolve that description against the repository yourself. It may name a branch, \
@@ -285,8 +332,9 @@ commands and by reading files -- do not rely on the description alone.
 Make no changes. Leave the working copy and the git state exactly as you found \
 them.
 
-Report what is wrong, what is risky, and what should change before this ships. \
-Keep the review under 400 words.
+Judge the work against that goal: whether it achieves it, what is wrong, what \
+is risky, and what should change before this ships. Keep the review under 400 \
+words.
 
 Grade the work on this scale:
   A  ship as is
@@ -621,24 +669,32 @@ def format_review(run, nonce):
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        prog="review",
+        prog=TOOL_NAME,
         description="Ask other AI agents to review your work.",
     )
-    parser.add_argument("author", nargs="?", help="the AI model that produced the work")
+    parser.add_argument(
+        "author",
+        nargs="?",
+        help=(
+            "the precise model name of the agent that produced the work, "
+            "including its version, as it names itself (e.g. claude-opus-5, "
+            "gpt-5.6-sol)"
+        ),
+    )
     parser.add_argument(
         "project",
         nargs="?",
         help="the project this work belongs to, normally the repository name",
     )
     parser.add_argument(
-        "description",
+        "goal",
         nargs="?",
-        help="what to review, e.g. 'the uncommitted changes' or 'agent-planning/01-review-tool.md'",
+        help="what the work was trying to achieve",
     )
     parser.add_argument(
-        "--known-authors",
-        action="store_true",
-        help="list recognized author names and exit",
+        "description",
+        nargs="?",
+        help="what to review, e.g. 'the uncommitted changes' or 'the current branch'",
     )
     parser.add_argument(
         "--dry-run",
@@ -652,42 +708,31 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.known_authors:
-        print(format_known_authors())
-        return EXIT_OK
-
     if os.environ.get(ACTIVE_ENV_VAR):
         print(
-            "review: refusing to run inside a review; a reviewer must not "
-            "call `review` itself.",
+            f"{TOOL_NAME}: refusing to run inside a review; a reviewer must "
+            f"not call `{TOOL_NAME}` itself.",
             file=sys.stderr,
         )
         return EXIT_RECURSION
 
-    if not (args.author and args.project and args.description):
-        parser.error("author, project, and description are all required")
+    if not (args.author and args.project and args.goal and args.description):
+        parser.error("author, project, goal, and description are all required")
 
-    author = resolve_author(args.author)
-    if author is None:
-        print(
-            f"review: unknown author {args.author!r}\n"
-            "Run `review --known-authors` to see the list.",
-            file=sys.stderr,
-        )
-        return EXIT_USAGE
-
-    reviewers = REVIEWERS.get(author, ())
-    if not reviewers:
-        print(f"review: no reviewers are configured for {author}", file=sys.stderr)
+    author = args.author.strip()
+    try:
+        reviewers = reviewers_for(author, load_rules())
+    except ConfigurationError as error:
+        print(f"{TOOL_NAME}: {error}", file=sys.stderr)
         return EXIT_USAGE
 
     try:
         timeout = reviewer_timeout()
     except ConfigurationError as error:
-        print(f"review: {error}", file=sys.stderr)
+        print(f"{TOOL_NAME}: {error}", file=sys.stderr)
         return EXIT_USAGE
 
-    prompt = build_prompt(args.description, os.getcwd())
+    prompt = build_prompt(args.goal, args.description, os.getcwd())
 
     if args.dry_run:
         for reviewer in reviewers:
@@ -696,11 +741,13 @@ def main(argv=None):
             print(f"{reviewer}: {shlex.join(argv)}")
         return EXIT_OK
 
-    invocation = describe_invocation(args.project, author, args.description)
+    invocation = describe_invocation(
+        args.project, author, args.goal, args.description
+    )
     if review_all(reviewers, prompt, timeout, invocation):
         return EXIT_OK
 
-    print("review: no reviews were produced", file=sys.stderr)
+    print(f"{TOOL_NAME}: no reviews were produced", file=sys.stderr)
     return EXIT_ALL_FAILED
 
 
@@ -740,7 +787,7 @@ def collect(future, reviewer):
     try:
         return future.result()
     except Exception as error:
-        print(f"review: {reviewer} could not be run: {error!r}", file=sys.stderr)
+        print(f"{TOOL_NAME}: {reviewer} could not be run: {error!r}", file=sys.stderr)
         traceback.print_exc()
         return ReviewerRun(
             reviewer=reviewer,
@@ -758,7 +805,7 @@ def database_path():
     if override:
         return pathlib.Path(override)
     data_home = os.environ.get("XDG_DATA_HOME") or pathlib.Path.home() / ".local/share"
-    return pathlib.Path(data_home) / "review" / "reviews.db"
+    return pathlib.Path(data_home) / TOOL_NAME / "reviews.db"
 
 
 def open_database(path=None):
@@ -775,7 +822,7 @@ def open_database(path=None):
         prepare_schema(connection)
         return connection
     except (sqlite3.Error, OSError) as error:
-        print(f"review: not recording to {path}: {error}", file=sys.stderr)
+        print(f"{TOOL_NAME}: not recording to {path}: {error}", file=sys.stderr)
         return None
 
 
@@ -816,12 +863,13 @@ def git_output(*args):
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def describe_invocation(project, author, description):
+def describe_invocation(project, author, goal, description):
     return Invocation(
         run_id=secrets.token_hex(8),
         ts=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         project=project,
         author=author,
+        goal=goal,
         description=description,
         cwd=os.getcwd(),
         branch=git_output("symbolic-ref", "--short", "HEAD"),
@@ -840,7 +888,7 @@ def record_run(connection, invocation, run):
     try:
         insert_run(connection, invocation, run)
     except (sqlite3.Error, OSError) as error:
-        print(f"review: could not record {run.reviewer}: {error}", file=sys.stderr)
+        print(f"{TOOL_NAME}: could not record {run.reviewer}: {error}", file=sys.stderr)
         return False
     return True
 
@@ -848,9 +896,9 @@ def record_run(connection, invocation, run):
 def insert_run(connection, invocation, run):
     connection.execute(
         "INSERT INTO reviews (run_id, ts, project, author, reviewer, harness,"
-        " description, cwd, branch, git_sha, grade, review_text, duration_s,"
-        " status, cost_usd)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " goal, description, cwd, branch, git_sha, grade, review_text,"
+        " duration_s, status, cost_usd)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             invocation.run_id,
             invocation.ts,
@@ -858,6 +906,7 @@ def insert_run(connection, invocation, run):
             invocation.author,
             run.reviewer,
             run.family,
+            invocation.goal,
             invocation.description,
             invocation.cwd,
             invocation.branch,
@@ -879,7 +928,7 @@ def deliver(run, nonce):
         return False
 
     if run.notice:
-        print(f"review: {run.notice}", file=sys.stderr)
+        print(f"{TOOL_NAME}: {run.notice}", file=sys.stderr)
     print(format_review(run, nonce), flush=True)
     return True
 
@@ -892,9 +941,9 @@ def report_failure(run):
     author's context; as diagnostics for a failure it is what you want.
     """
     sys.stdout.flush()
-    print(f"review: {run.reviewer} failed ({run.status})", file=sys.stderr)
+    print(f"{TOOL_NAME}: {run.reviewer} failed ({run.status})", file=sys.stderr)
     for line in join_notices(run.notice, run.stderr).splitlines():
-        print(f"review: {line}", file=sys.stderr)
+        print(f"{TOOL_NAME}: {line}", file=sys.stderr)
 
 
 if __name__ == "__main__":

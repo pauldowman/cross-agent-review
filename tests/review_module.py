@@ -1,4 +1,4 @@
-"""Load the extensionless `bin/review` script as an importable module.
+"""Load the extensionless `bin/cross-agent-review` script as a module.
 
 Compiles from source on every load rather than going through the import
 system, so a cached `.pyc` can never mask an edit to the script.
@@ -9,12 +9,19 @@ import pathlib
 import tempfile
 import types
 
-SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "bin" / "review"
+SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "bin" / "cross-agent-review"
 
 # Every test file imports this module, so this is the one place that can
 # guarantee no test ever writes to the user's real review database.
 os.environ.setdefault(
     "REVIEW_DB", str(pathlib.Path(tempfile.gettempdir()) / "review-tests.db")
+)
+
+# Routing now comes from a config file; tests get a fixture, never the
+# user's own, so a missing or edited personal config cannot break the suite.
+os.environ.setdefault(
+    "CROSS_AGENT_REVIEW_CONFIG",
+    str(pathlib.Path(__file__).resolve().parent / "fixtures" / "reviewers.toml"),
 )
 
 

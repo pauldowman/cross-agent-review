@@ -4,7 +4,7 @@ import unittest
 
 import review_module
 from test_grade import reply
-from test_spawn import PROJECT, SpawnTestCase, run_main
+from test_spawn import GOAL, PROJECT, SpawnTestCase, run_main
 
 REVIEW_BODY = "The codex reviewer found an unhandled error path in the parser."
 
@@ -21,36 +21,6 @@ class ConfiguredHarnessTest(unittest.TestCase):
 
     def setUp(self):
         self.review = review_module.load()
-
-    def test_every_configured_reviewer_has_a_harness(self):
-        for author, reviewers in self.review.REVIEWERS.items():
-            for reviewer in reviewers:
-                with self.subTest(author=author, reviewer=reviewer):
-                    self.assertIn(reviewer, self.review.HARNESS)
-
-    def test_every_known_author_has_reviewers(self):
-        for author in self.review.KNOWN_AUTHORS:
-            with self.subTest(author=author):
-                self.assertTrue(self.review.REVIEWERS.get(author))
-
-    def test_no_author_is_routed_to_itself(self):
-        for author, reviewers in self.review.REVIEWERS.items():
-            with self.subTest(author=author):
-                self.assertNotIn(author, reviewers)
-
-    def test_every_author_has_a_declared_harness_family(self):
-        self.assertEqual(
-            set(self.review.AUTHOR_FAMILY), set(self.review.KNOWN_AUTHORS)
-        )
-
-    def test_an_author_is_never_reviewed_only_by_its_own_harness(self):
-        for author, reviewers in self.review.REVIEWERS.items():
-            with self.subTest(author=author):
-                own = self.review.AUTHOR_FAMILY[author]
-                families = {self.review.HARNESS[r].family for r in reviewers}
-                self.assertTrue(
-                    families - {own}, f"{author} is only reviewed by {own} itself"
-                )
 
     def test_every_harness_pins_its_model_explicitly(self):
         for reviewer, harness in self.review.HARNESS.items():
@@ -81,22 +51,26 @@ class DryRunOfConfiguredReviewersTest(unittest.TestCase):
     def setUp(self):
         self.review = review_module.load()
 
-    def test_every_author_can_be_dry_run(self):
-        pristine = self.review
-        for author in pristine.KNOWN_AUTHORS:
+    def test_any_author_can_be_dry_run(self):
+        for author in list(self.review.HARNESS) + ["some-unknown-model"]:
             with self.subTest(author=author):
-                code, out, _ = run_main(pristine, author, PROJECT, "the branch", "--dry-run")
-                self.assertEqual(code, pristine.EXIT_OK)
-                for reviewer in pristine.REVIEWERS[author]:
-                    self.assertIn(reviewer, out)
+                code, out, _ = run_main(
+                    self.review, author, PROJECT, GOAL, "the branch", "--dry-run"
+                )
+                self.assertEqual(code, self.review.EXIT_OK)
+                self.assertTrue(out)
 
     def test_the_codex_command_shows_where_its_output_goes(self):
-        _, out, _ = run_main(self.review, "opus5", PROJECT, "the branch", "--dry-run")
+        _, out, _ = run_main(
+            self.review, "claude-opus-5", PROJECT, GOAL, "the branch", "--dry-run"
+        )
         self.assertIn(f"-o '{self.review.OUTPUT_PLACEHOLDER}'", out)
 
     def test_a_dry_run_creates_no_output_files(self):
         before = set(pathlib.Path(tempfile.gettempdir()).glob("review-*"))
-        run_main(self.review, "opus5", PROJECT, "the branch", "--dry-run")
+        run_main(
+            self.review, "claude-opus-5", PROJECT, GOAL, "the branch", "--dry-run"
+        )
         self.assertEqual(
             set(pathlib.Path(tempfile.gettempdir()).glob("review-*")) - before, set()
         )

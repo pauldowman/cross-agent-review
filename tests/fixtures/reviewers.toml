@@ -1,0 +1,18 @@
+# Routing fixture for the test suite. Tests that care about routing install
+# their own reviewers into HARNESS and override this with a catch-all.
+
+[[rule]]
+pattern = "^claude-opus"
+reviewers = ["codex-gpt-5.6-sol", "claude-sonnet-5"]
+
+[[rule]]
+pattern = "^claude"
+reviewers = ["codex-gpt-5.6-sol", "claude-opus-5"]
+
+[[rule]]
+pattern = "^gpt|^codex"
+reviewers = ["claude-opus-5", "claude-sonnet-5"]
+
+[[rule]]
+pattern = "."
+reviewers = ["codex-gpt-5.6-sol", "claude-opus-5"]

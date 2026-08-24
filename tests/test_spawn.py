@@ -2,6 +2,7 @@ import contextlib
 import io
 import os
 import pathlib
+import re
 import signal
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from unittest import mock
 import review_module
 
 PROJECT = "reviewer"
+GOAL = "add a review tool"
 LONG_ENOUGH_REVIEW = "this review body is long enough to look real"
 GRADED_REVIEW = f"<grade>B</grade>\n<review>\n{LONG_ENOUGH_REVIEW}\n</review>"
 
@@ -71,7 +73,12 @@ class SpawnTestCase(unittest.TestCase):
             family,
             argv or (sys.executable, str(FIXTURE), self.review.PROMPT_PLACEHOLDER),
         )
-        self.review.REVIEWERS["gpt-5.6"] = ("fake",)
+        self.route_to("fake")
+
+    def route_to(self, *reviewers):
+        """Send every author to these reviewers, bypassing the config file."""
+        rules = [(re.compile("."), tuple(reviewers))]
+        self.review.load_rules = lambda path=None: rules
 
     def set_env(self, **values):
         patcher = mock.patch.dict(os.environ, values)
@@ -81,13 +88,13 @@ class SpawnTestCase(unittest.TestCase):
 
 class PromptTest(SpawnTestCase):
     def test_prompt_carries_the_description_the_cwd_and_a_read_only_instruction(self):
-        prompt = self.review.build_prompt("the uncommitted changes", "/some/where")
+        prompt = self.review.build_prompt(GOAL, "the uncommitted changes", "/some/where")
         self.assertIn("the uncommitted changes", prompt)
         self.assertIn("/some/where", prompt)
         self.assertIn("Make no changes", prompt)
 
     def test_prompt_tells_the_reviewer_to_resolve_the_description_itself(self):
-        prompt = self.review.build_prompt("the current branch", "/some/where")
+        prompt = self.review.build_prompt(GOAL, "the current branch", "/some/where")
         self.assertIn("do not rely on the description alone", prompt)
 
 
@@ -158,13 +165,13 @@ class TimeoutConfigurationTest(SpawnTestCase):
 
     def test_a_non_number_is_a_usage_error_not_a_traceback(self):
         self.set_env(REVIEW_TIMEOUT="abc")
-        code, _, err = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, _, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         self.assertEqual(code, self.review.EXIT_USAGE)
         self.assertIn("REVIEW_TIMEOUT", err)
 
     def test_a_non_positive_value_is_a_usage_error(self):
         self.set_env(REVIEW_TIMEOUT="-5")
-        code, _, err = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, _, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         self.assertEqual(code, self.review.EXIT_USAGE)
         self.assertIn("greater than zero", err)
 
@@ -174,7 +181,7 @@ class DryRunTest(SpawnTestCase):
         self.use_fake_harness(
             argv=("/nonexistent/harness", self.review.PROMPT_PLACEHOLDER)
         )
-        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, "the branch", "--dry-run")
+        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch", "--dry-run")
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn("/nonexistent/harness", out)
 
@@ -267,7 +274,7 @@ class RunReviewerTest(SpawnTestCase):
 class MainOutputTest(SpawnTestCase):
     def test_review_text_is_printed_to_stdout(self):
         self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=GRADED_REVIEW)
-        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn(LONG_ENOUGH_REVIEW, out)
 
@@ -275,7 +282,7 @@ class MainOutputTest(SpawnTestCase):
         self.use_fake_harness(
             argv=("/nonexistent/harness", self.review.PROMPT_PLACEHOLDER)
         )
-        code, out, err = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, out, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         self.assertEqual(code, self.review.EXIT_ALL_FAILED)
         self.assertEqual(out, "")
         self.assertIn("harness_missing", err)
@@ -287,23 +294,17 @@ class RecursionGuardTest(SpawnTestCase):
             argv=("/nonexistent/harness", self.review.PROMPT_PLACEHOLDER)
         )
         self.set_env(REVIEW_ACTIVE="1")
-        code, _, err = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, _, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         self.assertEqual(code, self.review.EXIT_RECURSION)
         self.assertIn("refusing to run inside a review", err)
 
     def test_guard_is_checked_before_anything_is_spawned(self):
         self.set_env(FAKE_HARNESS_MODE="echo", REVIEW_ACTIVE="1")
-        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         self.assertEqual(code, self.review.EXIT_RECURSION)
         self.assertEqual(out, "")
 
 
-class NoReviewersTest(SpawnTestCase):
-    def test_author_without_reviewers_is_a_usage_error(self):
-        self.review.REVIEWERS.pop("gpt-5.6", None)
-        code, _, err = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
-        self.assertEqual(code, self.review.EXIT_USAGE)
-        self.assertIn("no reviewers are configured", err)
 
 
 class EndToEndTest(SpawnTestCase):
@@ -311,7 +312,7 @@ class EndToEndTest(SpawnTestCase):
         environment = dict(os.environ)
         environment.pop("REVIEW_ACTIVE", None)
         result = subprocess.run(
-            [str(review_module.SCRIPT), "gpt-5.6", PROJECT, "the branch", "--dry-run"],
+            [str(review_module.SCRIPT), "gpt-5.6", PROJECT, GOAL, "the branch", "--dry-run"],
             capture_output=True,
             text=True,
             env=environment,

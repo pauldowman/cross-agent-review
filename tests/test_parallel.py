@@ -6,7 +6,7 @@ import time
 import unittest
 
 from test_grade import reply
-from test_spawn import PROJECT, SpawnTestCase, run_main
+from test_spawn import GOAL, PROJECT, SpawnTestCase, run_main
 
 FIRST = "The first reviewer found an off-by-one in the retry loop."
 SECOND = "The second reviewer found a missing index on the lookup table."
@@ -42,7 +42,7 @@ class ParallelTestCase(SpawnTestCase):
         )
 
     def use_reviewers(self, *names):
-        self.review.REVIEWERS["gpt-5.6"] = names
+        self.route_to(*names)
 
 
 class TwoReviewersTest(ParallelTestCase):
@@ -51,7 +51,7 @@ class TwoReviewersTest(ParallelTestCase):
         self.static_harness("beta", reply("C", SECOND))
         self.use_reviewers("alpha", "beta")
 
-        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn(FIRST, out)
@@ -65,7 +65,7 @@ class TwoReviewersTest(ParallelTestCase):
         self.static_harness("beta", reply("C", SECOND))
         self.use_reviewers("alpha", "beta")
 
-        run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         recorded = rows(self.db_path)
         self.assertEqual(len(recorded), 2)
@@ -82,7 +82,7 @@ class TwoReviewersTest(ParallelTestCase):
         self.use_reviewers("alpha", "beta")
 
         started = time.monotonic()
-        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         elapsed = time.monotonic() - started
 
         self.assertEqual(code, self.review.EXIT_OK)
@@ -104,7 +104,7 @@ class PartialFailureTest(ParallelTestCase):
         self.broken_harness("beta")
         self.use_reviewers("alpha", "beta")
 
-        code, out, err = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, out, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn(FIRST, out)
@@ -115,7 +115,7 @@ class PartialFailureTest(ParallelTestCase):
         self.broken_harness("beta")
         self.use_reviewers("alpha", "beta")
 
-        run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         recorded = {row["reviewer"]: row for row in rows(self.db_path)}
         self.assertEqual(len(recorded), 2)
@@ -130,7 +130,7 @@ class PartialFailureTest(ParallelTestCase):
         self.broken_harness("beta")
         self.use_reviewers("alpha", "beta")
 
-        code, out, err = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, out, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         self.assertEqual(code, self.review.EXIT_ALL_FAILED)
         self.assertEqual(out, "")
@@ -143,7 +143,7 @@ class PartialFailureTest(ParallelTestCase):
         )
         self.use_reviewers("alpha", "beta")
 
-        code, out, err = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, out, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn(FIRST, out)
@@ -170,7 +170,7 @@ class InterruptTest(ParallelTestCase):
     def test_a_finished_reviewer_is_no_longer_tracked(self):
         self.static_harness("alpha", reply("A", FIRST))
         self.use_reviewers("alpha")
-        run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         self.assertEqual(self.review.kill_live_processes(), 0)
 
@@ -195,7 +195,7 @@ class ThreeReviewersTest(ParallelTestCase):
             self.static_harness(name, reply("B", f"{name} says the code is fine."))
         self.use_reviewers("alpha", "beta", "gamma")
 
-        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, "the branch")
+        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertEqual(out.count("end of review"), 3)
