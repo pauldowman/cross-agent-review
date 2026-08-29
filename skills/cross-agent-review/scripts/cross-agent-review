@@ -52,19 +52,15 @@ def codex_harness(model):
     Its stdout carries a banner and a token-usage footer, so the file is the
     only clean source for the reply.
 
-    The sandbox is off deliberately. `-s read-only` runs every command under
-    bubblewrap, which fails outright on a kernel that blocks unprivileged
-    user namespaces -- the reviewer can then talk but cannot run `git diff`
-    or read a file, so it grades nothing. Reviewers are told not to make
-    changes by the prompt instead.
+    Sandbox and approval settings come from the user's codex configuration.
+    The reviewer is expected to have enough permission to read the repository;
+    this tool must not elevate it or bypass configured protections.
     """
     return Harness(
         "codex",
         (
             "codex",
             "exec",
-            "-s",
-            "danger-full-access",
             "-m",
             model,
             "-c",

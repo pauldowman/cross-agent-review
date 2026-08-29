@@ -9,13 +9,14 @@ from test_spawn import GOAL, PROJECT, SpawnTestCase, run_main
 
 REVIEW_BODY = "The codex reviewer found an unhandled error path in the parser."
 
-# Each harness states its permission posture explicitly rather than
-# inheriting whatever the user's config last set.
+# Claude and OpenCode have a safe review mode. Codex deliberately inherits the
+# user's configured permissions rather than overriding or bypassing them.
 PERMISSION_FLAGS = {
     "claude": ("--permission-mode", "plan"),
-    "codex": ("-s", "danger-full-access"),
     "opencode": ("--agent", "plan"),
 }
+
+DANGEROUS_PERMISSION_MARKERS = ("--dangerously-", "danger-full-access")
 
 
 class ConfiguredHarnessTest(unittest.TestCase):
@@ -34,13 +35,30 @@ class ConfiguredHarnessTest(unittest.TestCase):
                 selected = harness.argv[harness.argv.index(pinned[0]) + 1]
                 self.assertEqual(selected, model)
 
-    def test_every_harness_states_its_permissions_explicitly(self):
-        for family, builder in self.review.HARNESSES.items():
+    def test_harness_review_modes_are_explicit_when_supported(self):
+        for family, (flag, value) in PERMISSION_FLAGS.items():
             with self.subTest(harness=family):
-                harness = builder("model-under-test")
-                flag, value = PERMISSION_FLAGS[harness.family]
+                harness = self.review.HARNESSES[family]("model-under-test")
                 self.assertIn(flag, harness.argv)
                 self.assertEqual(harness.argv[harness.argv.index(flag) + 1], value)
+
+    def test_codex_inherits_the_users_configured_permissions(self):
+        argv = self.review.codex_harness("model-under-test").argv
+
+        self.assertNotIn("-s", argv)
+        self.assertNotIn("--sandbox", argv)
+
+    def test_no_harness_bypasses_configured_permissions(self):
+        for family, builder in self.review.HARNESSES.items():
+            with self.subTest(harness=family):
+                argv = builder("model-under-test").argv
+                dangerous = [
+                    argument
+                    for argument in argv
+                    if argument == "--auto"
+                    or any(marker in argument for marker in DANGEROUS_PERMISSION_MARKERS)
+                ]
+                self.assertEqual(dangerous, [])
 
     def test_every_harness_family_has_an_extractor(self):
         for family in self.review.HARNESSES:
