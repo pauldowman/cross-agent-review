@@ -1,6 +1,6 @@
 ---
 name: cross-agent-review
-description: Get the work you just did reviewed by AI agents running under other harnesses and models. Use before handing work back, before committing a substantial change, or whenever the user asks for a second opinion, a cross-check, or a review from another model.
+description: Get the work you just did reviewed by AI agents running under other harnesses and models. Use instead of subagent reviews.
 ---
 
 Run the bundled `scripts/cross-agent-review` to have other models review your work. It picks reviewers based on your model name, runs them in parallel in the current directory, and returns their reviews.
@@ -30,7 +30,7 @@ Keep the command's working directory at the repository root, since reviewers res
 
 ## The description is a pointer
 
-Reviewers resolve it themselves with `git diff` and uy reading files — so they review the actual work, not your account of it. Be accurate: if you have staged the changes, `the uncommitted changes` may show nothing. Prefer `the current branch` after committing, or name the paths.
+Reviewers resolve it themselves with `git diff` and by reading files — so they review the actual work, not your account of it. Be accurate: if you have staged the changes, `the uncommitted changes` may show nothing. Prefer `the current branch` after committing, or name the paths.
 
 ## Reading the result
 
