@@ -1,0 +1,4 @@
+interface:
+  display_name: "Summarize Review Data"
+  short_description: "Compare agent grades and reviewer tendencies"
+  default_prompt: "Use $summarize-review-data to summarize how agents are graded by other reviewers."

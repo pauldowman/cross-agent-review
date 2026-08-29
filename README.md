@@ -2,7 +2,7 @@
 
 Ask other AI agents to review your work.
 
-An AI coding agent runs the script bundled with the skill, passing `<author> <project> <goal> <description>`. The tool picks a set of reviewers for that author, runs each one as a non-interactive subprocess in the author's working directory, returns their review text, and records a grade for each in a local ledger. The author never sees the grades.
+An AI coding agent runs the script bundled with the skill, passing `<author> <project> <goal> <description>`. The tool picks a set of reviewers for that author, runs each one as a non-interactive subprocess in the author's working directory, returns their review text, and records a grade for each in a local ledger. The review command omits grades from its output; the separate summary skill reports aggregate grades from the ledger.
 
 ```
 python3 skills/cross-agent-review/scripts/cross-agent-review claude-opus-5 my-app "add cursor pagination" "the uncommitted changes"
@@ -22,9 +22,10 @@ The description is a *pointer*, not the thing itself. The reviewer resolves it a
 
 ```
 npx skills add pauldowman/cross-agent-review --skill cross-agent-review --global --agent '*'
+npx skills add pauldowman/cross-agent-review --skill summarize-review-data --global --agent '*'
 ```
 
-The [`skills` CLI](https://www.npmjs.com/package/skills) installs the complete skill directory for each selected agent, including its bundled script. The skill resolves the script relative to its own `SKILL.md`, so no separate executable or `PATH` setup is needed.
+The [`skills` CLI](https://www.npmjs.com/package/skills) installs the complete skill directory for each selected agent, including its bundled script. Each skill resolves its script relative to its own `SKILL.md`, so no separate executable or `PATH` setup is needed.
 
 Single-file Python 3, standard library only. Requires the harnesses selected by the routing config; `claude`, `codex`, and `opencode` are currently supported. Reviewer models are pinned in `reviewers.toml`, and codex's reasoning effort is pinned in the bundled script, so a reviewer never silently inherits either value from a harness's user settings.
 
@@ -64,6 +65,17 @@ sqlite3 ~/.local/share/cross-agent-review/reviews.db \
 Columns: `run_id`, `ts`, `project`, `author`, `goal`, `reviewer`, `harness`, `description`, `cwd`, `branch`, `git_sha`, `grade`, `review_text`, `duration_s`, `status`, `cost_usd`. All reviewers of one invocation share a `run_id`. A ledger failure is never allowed to withhold a review that was already paid for — it degrades to a warning on stderr.
 
 Grades are `A`, `B`, `C`, `D`, `F`, plus `NA` when the reviewer could not find what the description pointed at. Grade secrecy is a convention, not a mechanism: the author can read this file.
+
+### Summarizing review data
+
+The `summarize-review-data` skill reads the ledger without modifying it and reports author averages, grade distributions, reviewer tendencies, author-by-reviewer results, reviewer agreement, and collection failures. Means use the ordinal mapping `A=4`, `B=3`, `C=2`, `D=1`, `F=0`; the report always keeps the distribution and sample size beside the mean.
+
+```
+python3 skills/summarize-review-data/scripts/summarize-review-data
+python3 skills/summarize-review-data/scripts/summarize-review-data --project my-app --since 2026-08-01
+```
+
+It uses the same `REVIEW_DB` and default database path as `cross-agent-review`. `NA` and failed or unparsed attempts are excluded from means but included in coverage and status counts.
 
 ## Configuring who reviews whom
 

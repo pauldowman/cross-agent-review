@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""Summarize the cross-agent-review SQLite ledger without modifying it."""
+
+import argparse
+import datetime
+import os
+import pathlib
+import sqlite3
+import sys
+from collections import Counter, defaultdict, namedtuple
+
+
+TOOL_NAME = "summarize-review-data"
+DB_ENV_VAR = "REVIEW_DB"
+# This is cross-agent-review's STATUS_OK, repeated so this skill stays standalone.
+GRADED_STATUS = "ok"
+GRADE_ORDER = ("A", "B", "C", "D", "F")
+GRADE_SCORES = {grade: 4 - index for index, grade in enumerate(GRADE_ORDER)}
+REPORT_COLUMNS = (
+    "run_id",
+    "ts",
+    "project",
+    "author",
+    "reviewer",
+    "harness",
+    "grade",
+    "status",
+    "duration_s",
+    "cost_usd",
+)
+REQUIRED_COLUMNS = {
+    "run_id",
+    "ts",
+    "author",
+    "reviewer",
+    "harness",
+    "grade",
+    "status",
+}
+
+GroupStats = namedtuple(
+    "GroupStats",
+    "name mean graded attempts invocations counterparts distribution mean_duration known_cost cost_rows",
+)
+AgreementStats = namedtuple(
+    "AgreementStats", "comparable exact average_spread disagreements"
+)
+
+
+class DataError(Exception):
+    """The requested ledger cannot produce a trustworthy report."""
+
+
+def database_path():
+    override = os.environ.get(DB_ENV_VAR)
+    if override:
+        return pathlib.Path(override)
+    data_home = os.environ.get("XDG_DATA_HOME") or pathlib.Path.home() / ".local/share"
+    return pathlib.Path(data_home) / "cross-agent-review" / "reviews.db"
+
+
+def open_database(path):
+    path = pathlib.Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise DataError(f"no review database at {path}")
+    try:
+        connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+        return connection
+    except sqlite3.Error as error:
+        raise DataError(f"cannot open {path}: {error}") from error
+
+
+def table_columns(connection):
+    try:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(reviews)")}
+    except sqlite3.Error as error:
+        raise DataError(f"cannot inspect the reviews table: {error}") from error
+    if not columns:
+        raise DataError("the database has no reviews table")
+    missing = sorted(REQUIRED_COLUMNS - columns)
+    if missing:
+        raise DataError(f"the reviews table is missing columns: {', '.join(missing)}")
+    return columns
+
+
+def load_rows(connection, project=None, since=None):
+    columns = table_columns(connection)
+    if project is not None and "project" not in columns:
+        raise DataError("this older reviews table cannot be filtered by project")
+
+    selected = [
+        column if column in columns else f"NULL AS {column}"
+        for column in REPORT_COLUMNS
+    ]
+    conditions, parameters = [], []
+    if project is not None:
+        conditions.append("project = ?")
+        parameters.append(project)
+    if since is not None:
+        conditions.append("ts >= ?")
+        parameters.append(since)
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    query = f"SELECT {', '.join(selected)} FROM reviews{where} ORDER BY ts, run_id"
+    try:
+        return [dict(row) for row in connection.execute(query, parameters)]
+    except sqlite3.Error as error:
+        raise DataError(f"cannot read review data: {error}") from error
+
+
+def normalized_grade(row):
+    if row.get("status") != GRADED_STATUS:
+        return None
+    grade = row.get("grade")
+    if not isinstance(grade, str):
+        return None
+    grade = grade.upper()
+    return grade if grade in GRADE_SCORES else None
+
+
+def distribution(rows):
+    counts = Counter(
+        grade for row in rows if (grade := normalized_grade(row)) is not None
+    )
+    return tuple((grade, counts[grade]) for grade in GRADE_ORDER)
+
+
+def field(row, key):
+    return key(row) if callable(key) else row[key]
+
+
+def reviewer_identity(row):
+    return f"{row['reviewer']} via {row['harness']}"
+
+
+def group_stats(rows, key, counterpart_key):
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[field(row, key)].append(row)
+
+    summaries = []
+    for name, attempts in grouped.items():
+        graded_rows = [row for row in attempts if normalized_grade(row) is not None]
+        scores = [GRADE_SCORES[normalized_grade(row)] for row in graded_rows]
+        durations = [
+            row["duration_s"]
+            for row in attempts
+            if isinstance(row.get("duration_s"), (int, float))
+        ]
+        costs = [
+            row["cost_usd"]
+            for row in attempts
+            if isinstance(row.get("cost_usd"), (int, float))
+        ]
+        summaries.append(
+            GroupStats(
+                name=name,
+                mean=sum(scores) / len(scores) if scores else None,
+                graded=len(graded_rows),
+                attempts=len(attempts),
+                invocations=len({row["run_id"] for row in attempts}),
+                counterparts=len({field(row, counterpart_key) for row in attempts}),
+                distribution=distribution(attempts),
+                mean_duration=sum(durations) / len(durations) if durations else None,
+                known_cost=sum(costs),
+                cost_rows=len(costs),
+            )
+        )
+    return sorted(
+        summaries,
+        key=lambda item: (
+            item.mean is None,
+            -(item.mean if item.mean is not None else 0),
+            str(item.name).casefold(),
+        ),
+    )
+
+
+def agreement_stats(rows):
+    by_run = defaultdict(list)
+    for row in rows:
+        if normalized_grade(row) is not None:
+            by_run[row["run_id"]].append(row)
+
+    comparable, disagreements, spreads = 0, [], []
+    for run_rows in by_run.values():
+        if len(run_rows) < 2:
+            continue
+        scores = [GRADE_SCORES[normalized_grade(row)] for row in run_rows]
+        spread = max(scores) - min(scores)
+        comparable += 1
+        spreads.append(spread)
+        if spread:
+            disagreements.append((spread, run_rows))
+
+    disagreements.sort(
+        key=lambda item: (item[0], max(row["ts"] for row in item[1])), reverse=True
+    )
+    exact = comparable - len(disagreements)
+    return AgreementStats(
+        comparable=comparable,
+        exact=exact,
+        average_spread=sum(spreads) / len(spreads) if spreads else None,
+        disagreements=disagreements,
+    )
+
+
+def markdown(value):
+    if value is None or value == "":
+        return "—"
+    return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+
+def format_distribution(counts):
+    present = [f"{grade}:{count}" for grade, count in counts if count]
+    return " ".join(present) if present else "—"
+
+
+def format_mean(value):
+    return f"{value:.2f}/4" if value is not None else "—"
+
+
+def format_duration(value):
+    return f"{value:.1f}s" if value is not None else "—"
+
+
+def append_table(lines, headers, body):
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join("---" for _ in headers) + " |")
+    lines.extend("| " + " | ".join(map(markdown, row)) + " |" for row in body)
+
+
+def build_report(rows, path, project=None, since=None):
+    lines = ["# Review data summary", ""]
+    scope = []
+    if project is not None:
+        scope.append(f"project `{markdown(project)}`")
+    if since is not None:
+        scope.append(f"since `{markdown(since)}`")
+    lines.append(f"Database: `{markdown(path)}`")
+    lines.append(f"Scope: {', '.join(scope) if scope else 'all recorded data'}")
+
+    if not rows:
+        lines.extend(["", "No review attempts matched this scope."])
+        return "\n".join(lines) + "\n"
+
+    graded = [row for row in rows if normalized_grade(row) is not None]
+    invocations = {row["run_id"] for row in rows}
+    projects = {row["project"] for row in rows if row.get("project")}
+    earliest, latest = min(row["ts"] for row in rows), max(row["ts"] for row in rows)
+    coverage = 100 * len(graded) / len(rows)
+    lines.extend(
+        [
+            "",
+            (
+                f"Coverage: {len(graded)}/{len(rows)} attempts graded ({coverage:.1f}%); "
+                f"{len(invocations)} invocations; {len(projects)} projects; "
+                f"{markdown(earliest)} to {markdown(latest)}."
+            ),
+            "",
+            "Means use A=4, B=3, C=2, D=1, F=0. NA and ungraded attempts are excluded from means.",
+            "",
+            "## Authors",
+            "",
+        ]
+    )
+
+    authors = group_stats(rows, "author", reviewer_identity)
+    append_table(
+        lines,
+        ("Author", "Mean", "Graded/attempts", "Invocations", "Reviewers", "Distribution"),
+        (
+            (
+                item.name,
+                format_mean(item.mean),
+                f"{item.graded}/{item.attempts}",
+                item.invocations,
+                item.counterparts,
+                format_distribution(item.distribution),
+            )
+            for item in authors
+        ),
+    )
+
+    lines.extend(["", "## Reviewer tendencies", ""])
+    reviewers = group_stats(rows, reviewer_identity, "author")
+    append_table(
+        lines,
+        (
+            "Reviewer",
+            "Mean given",
+            "Graded/attempts",
+            "Authors",
+            "Mean duration",
+            "Reported cost",
+            "Distribution",
+        ),
+        (
+            (
+                item.name,
+                format_mean(item.mean),
+                f"{item.graded}/{item.attempts}",
+                item.counterparts,
+                format_duration(item.mean_duration),
+                f"${item.known_cost:.4f} ({item.cost_rows}/{item.attempts} rows)"
+                if item.cost_rows
+                else "—",
+                format_distribution(item.distribution),
+            )
+            for item in reviewers
+        ),
+    )
+
+    reviewer_names = sorted({reviewer_identity(row) for row in rows}, key=str.casefold)
+    by_pair = defaultdict(list)
+    for row in rows:
+        by_pair[(row["author"], reviewer_identity(row))].append(row)
+    lines.extend(["", "## Author by reviewer", ""])
+    pair_rows = []
+    for author in authors:
+        for reviewer in reviewer_names:
+            attempts = by_pair.get((author.name, reviewer))
+            if not attempts:
+                continue
+            stats = group_stats(attempts, "author", reviewer_identity)[0]
+            pair_rows.append(
+                (
+                    author.name,
+                    reviewer,
+                    format_mean(stats.mean),
+                    f"{stats.graded}/{stats.attempts}",
+                    format_distribution(stats.distribution),
+                )
+            )
+    append_table(
+        lines,
+        ("Author", "Reviewer", "Mean", "Graded/attempts", "Distribution"),
+        pair_rows,
+    )
+
+    agreement = agreement_stats(rows)
+    lines.extend(["", "## Reviewer agreement", ""])
+    if not agreement.comparable:
+        lines.append("No invocation has two or more grades, so reviewer agreement cannot be measured.")
+    else:
+        lines.append(
+            f"{agreement.exact}/{agreement.comparable} comparable invocations have exact agreement; "
+            f"the mean grade spread is {agreement.average_spread:.2f} points."
+        )
+        if agreement.disagreements:
+            lines.extend(["", "Largest disagreements (up to 10):", ""])
+            disagreement_rows = []
+            for spread, run_rows in agreement.disagreements[:10]:
+                first = run_rows[0]
+                grades = ", ".join(
+                    f"{reviewer_identity(row)}={normalized_grade(row)}"
+                    for row in sorted(run_rows, key=lambda row: reviewer_identity(row).casefold())
+                )
+                disagreement_rows.append(
+                    (first["ts"], first.get("project"), first["author"], spread, grades)
+                )
+            append_table(
+                lines,
+                ("Date", "Project", "Author", "Spread", "Grades"),
+                disagreement_rows,
+            )
+
+    statuses = Counter(row["status"] for row in rows)
+    lines.extend(["", "## Collection status", ""])
+    append_table(
+        lines,
+        ("Status", "Attempts"),
+        ((status, count) for status, count in sorted(statuses.items())),
+    )
+    return "\n".join(lines) + "\n"
+
+
+def parse_since(value):
+    try:
+        if len(value) == 10:
+            return datetime.date.fromisoformat(value).isoformat()
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            "must be an ISO date or timestamp, such as 2026-08-01"
+        ) from error
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc).isoformat()
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog=TOOL_NAME,
+        description="Summarize grades and reliability in a cross-agent-review ledger.",
+    )
+    parser.add_argument("--db", type=pathlib.Path, help="review database path")
+    parser.add_argument("--project", help="include only this exact project name")
+    parser.add_argument("--since", type=parse_since, help="include rows at or after this ISO date or timestamp")
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    path = (args.db or database_path()).expanduser().resolve()
+    connection = None
+    try:
+        connection = open_database(path)
+        rows = load_rows(connection, project=args.project, since=args.since)
+        print(build_report(rows, path, project=args.project, since=args.since), end="")
+        return 0
+    except DataError as error:
+        print(f"{TOOL_NAME}: {error}", file=sys.stderr)
+        return 1
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
