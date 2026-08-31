@@ -109,8 +109,6 @@ EXAMPLE_CONFIG = """# Which reviewers review which author, for cross-agent-revie
 # specific rules first and finish with a catch-all. Each reviewer specifies
 # the harness to invoke and the model name to pass to it. Replace the example
 # model values below with models available through your harnesses.
-#
-# Route an author away from its own model, or it reviews itself.
 
 [[rule]]
 pattern = "."

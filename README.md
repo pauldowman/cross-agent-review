@@ -50,8 +50,6 @@ reviewers = [
 
 Each `pattern` is a regular expression matched case-insensitively anywhere in the author's model name. **The first matching rule wins**, so order specific rules before general ones and end with a catch-all — an author matching no rule is an error. Each `reviewers` entry pairs a supported `harness` with the exact `model` string passed to it. Model names are opaque to the script: adding or replacing a model is a config-only change.
 
-Route each author away from its own model, or it reviews itself.
-
 `HARNESSES` in `skills/cross-agent-review/scripts/cross-agent-review` defines how supported harness families are invoked. Adding a new harness family still requires code for its command and output format; adding a model does not.
 
 ### Timeouts
