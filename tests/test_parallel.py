@@ -2,11 +2,12 @@ import shlex
 import signal
 import sqlite3
 import subprocess
+import sys
 import time
 import unittest
 
 from test_grade import reply
-from test_spawn import GOAL, PROJECT, SpawnTestCase, run_main
+from test_spawn import FIXTURE, GOAL, PROJECT, SpawnTestCase, run_main
 
 FIRST = "The first reviewer found an off-by-one in the retry loop."
 SECOND = "The second reviewer found a missing index on the lookup table."
@@ -44,6 +45,15 @@ class ParallelTestCase(SpawnTestCase):
             "plain",
             ("/nonexistent/harness", self.review.PROMPT_PLACEHOLDER),
         )
+
+    def noisy_harness(self, name):
+        """A reviewer that fails after narrating its whole session on stderr."""
+        self.install_harness(
+            name,
+            "plain",
+            (sys.executable, str(FIXTURE), self.review.PROMPT_PLACEHOLDER),
+        )
+        self.set_env(FAKE_HARNESS_MODE="noisy")
 
     def use_reviewers(self, *names):
         self.route_to(*(self.review.Reviewer("plain", name) for name in names))
@@ -139,6 +149,41 @@ class PartialFailureTest(ParallelTestCase):
         self.assertEqual(code, self.review.EXIT_ALL_FAILED)
         self.assertEqual(out, "")
         self.assertIn("no reviews were produced", err)
+
+    def test_a_partial_run_says_how_many_reviewers_delivered(self):
+        self.static_harness("alpha", reply("A", FIRST))
+        self.broken_harness("beta")
+        self.use_reviewers("alpha", "beta")
+
+        _, _, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
+
+        self.assertIn("1 of 2 reviewers produced a review", err)
+
+    def test_a_complete_run_says_nothing_about_counts(self):
+        self.static_harness("alpha", reply("A", FIRST))
+        self.static_harness("beta", reply("B", SECOND))
+        self.use_reviewers("alpha", "beta")
+
+        _, _, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
+
+        self.assertNotIn("produced a review", err)
+
+    def test_a_failed_reviewers_transcript_does_not_bury_the_other_review(self):
+        self.static_harness("alpha", reply("A", FIRST))
+        self.noisy_harness("beta")
+        self.use_reviewers("alpha", "beta")
+
+        code, out, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
+
+        self.assertEqual(code, self.review.EXIT_OK)
+        self.assertIn(FIRST, out)
+        self.assertIn("beta via plain failed", err)
+        self.assertNotIn("transcript line 0\n", err)
+        self.assertLess(
+            len(err.splitlines()),
+            self.review.STDERR_TAIL_LINES + 10,
+            "a failed reviewer spilled its transcript over the review",
+        )
 
     def test_a_reviewer_that_raises_does_not_lose_the_others(self):
         self.static_harness("alpha", reply("A", FIRST))

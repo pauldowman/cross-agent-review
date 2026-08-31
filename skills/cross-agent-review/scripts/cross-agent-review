@@ -157,6 +157,13 @@ PARSE_NOTICES = {
 # this check must stay on the pre-parse text to keep catching that case.
 MIN_REVIEW_CHARS = 20
 
+# A harness that streams its whole session to stderr produces thousands of
+# lines, and a failed reviewer prints its diagnostics in full. Unbounded, one
+# failure buries the reviews that succeeded under two orders of magnitude of
+# transcript. Only the end is kept, because that is where the error is.
+STDERR_TAIL_LINES = 20
+STDERR_TAIL_CHARS = 2000
+
 TOOL_NAME = "cross-agent-review"
 CONFIG_ENV_VAR = "CROSS_AGENT_REVIEW_CONFIG"
 ACTIVE_ENV_VAR = "REVIEW_ACTIVE"
@@ -164,7 +171,12 @@ TIMEOUT_ENV_VAR = "REVIEW_TIMEOUT"
 DB_ENV_VAR = "REVIEW_DB"
 SCHEMA_VERSION = 3
 BUSY_TIMEOUT_SECONDS = 5
-DEFAULT_TIMEOUT_SECONDS = 240
+# A reviewer is a real agent reading real code, and the slower harnesses spend
+# several minutes on a substantial diff. This must also stay below the calling
+# agent's own command timeout -- the skill asks for 600s -- so that an overrun
+# is reported here, with the reviews that did finish, instead of the caller
+# killing the tool and losing all of them.
+DEFAULT_TIMEOUT_SECONDS = 480
 DRAIN_TIMEOUT_SECONDS = 5
 
 ReviewerRun = namedtuple(
@@ -549,6 +561,24 @@ def join_notices(*parts):
     return "\n".join(part for part in parts if part)
 
 
+def tail(text):
+    """The end of a harness's diagnostics, labelled when anything was dropped.
+
+    Both bounds are needed: a transcript arrives as many lines, and a single
+    JSON event or stack trace arrives as one very long one.
+    """
+    lines = text.splitlines()
+    kept = lines[-STDERR_TAIL_LINES:]
+    body = "\n".join(kept)
+    clipped = body[-STDERR_TAIL_CHARS:]
+    if len(kept) == len(lines) and len(clipped) == len(body):
+        return text
+    return (
+        f"[showing the last {len(clipped)} of {len(text)} characters "
+        f"of harness output]\n{clipped}"
+    )
+
+
 def classify(extracted, returncode):
     """Decide what a finished harness actually produced.
 
@@ -655,7 +685,7 @@ def run_harness(reviewer, prompt, timeout, output_path):
             status=status,
             text=text,
             notice=notice,
-            stderr=stderr,
+            stderr=tail(stderr),
             duration_s=time.monotonic() - started,
             returncode=returncode,
             cost_usd=cost_usd,
@@ -685,7 +715,12 @@ def run_harness(reviewer, prompt, timeout, output_path):
         return finished(
             STATUS_TIMEOUT,
             "",
-            join_notices(f"timed out after {timeout}s", partial),
+            join_notices(
+                f"timed out after {timeout}s "
+                f"(this is the per-reviewer timeout; raise {TIMEOUT_ENV_VAR} "
+                f"to allow longer)",
+                partial,
+            ),
             stderr,
         )
     finally:
@@ -836,21 +871,28 @@ def main(argv=None):
     invocation = describe_invocation(
         args.project, author, args.goal, args.description
     )
-    if review_all(reviewers, prompt, timeout, invocation):
-        return EXIT_OK
+    delivered = review_all(reviewers, prompt, timeout, invocation)
+    if not delivered:
+        print(f"{TOOL_NAME}: no reviews were produced", file=sys.stderr)
+        return EXIT_ALL_FAILED
 
-    print(f"{TOOL_NAME}: no reviews were produced", file=sys.stderr)
-    return EXIT_ALL_FAILED
+    if delivered < len(reviewers):
+        print(
+            f"{TOOL_NAME}: {delivered} of {len(reviewers)} reviewers produced "
+            f"a review",
+            file=sys.stderr,
+        )
+    return EXIT_OK
 
 
 def review_all(reviewers, prompt, timeout, invocation):
-    """Run, record, and deliver each reviewer. True if any produced a review.
+    """Run, record, and deliver each reviewer. Returns how many reviewed.
 
     Recording and delivery happen per reviewer as it finishes, so a run cut
     short by the caller still keeps whatever completed.
     """
     connection = open_database()
-    delivered = False
+    delivered = 0
     try:
         with concurrent.futures.ThreadPoolExecutor(len(reviewers)) as pool:
             pending = {
@@ -860,7 +902,8 @@ def review_all(reviewers, prompt, timeout, invocation):
             for future in concurrent.futures.as_completed(pending):
                 run = collect(future, pending[future])
                 record_run(connection, invocation, run)
-                delivered = deliver(run, invocation.run_id) or delivered
+                if deliver(run, invocation.run_id):
+                    delivered += 1
     finally:
         if connection is not None:
             connection.close()

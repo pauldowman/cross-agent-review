@@ -54,6 +54,12 @@ Route each author away from its own model, or it reviews itself.
 
 `HARNESSES` in `skills/cross-agent-review/scripts/cross-agent-review` defines how supported harness families are invoked. Adding a new harness family still requires code for its command and output format; adding a model does not.
 
+### Timeouts
+
+Each reviewer gets 480 seconds, overridable with `REVIEW_TIMEOUT=<seconds>`. A reviewer that overruns is killed, recorded as a `timeout`, and reported on stderr; the reviews that did finish are still delivered, and stderr says how many of the configured reviewers delivered.
+
+The calling agent's own command timeout has to be larger than `REVIEW_TIMEOUT`, or it kills the tool before the tool can report anything. The bundled skill asks for 600s, which is the ceiling for a Claude Code `Bash` call.
+
 ## Summarizing review data
 
 The `summarize-review-data` skill reads the ledger without modifying it and reports author averages, grade distributions, reviewer tendencies, author-by-reviewer results, reviewer agreement, and collection failures. Means use the ordinal mapping `A=4`, `B=3`, `C=2`, `D=1`, `F=0`; the report always keeps the distribution and sample size beside the mean.
@@ -77,5 +83,6 @@ The prompt tells reviewers to make no changes, but a prompt is not a security bo
 
 - `SIGKILL` on the tool itself leaks the reviewer subprocesses. `SIGINT` and `SIGTERM` are handled: reviewers are killed and the tool exits in milliseconds, though the interrupt path skips cleanup of codex's empty temp file in `/tmp`.
 - A reviewer that escapes its process group by starting its own session survives the timeout kill. The drain is bounded so this cannot hang the tool, but the process is leaked.
+- A failed reviewer's harness diagnostics are clipped to their last 20 lines, or 2000 characters, whichever is smaller. Codex narrates its whole session on stderr, and unclipped that transcript buries the reviews that succeeded under two orders of magnitude of noise.
 - `cost_usd` is recorded only for harnesses that report it — `claude` does; `codex` and `opencode` do not.
 - Reviewer access depends on each harness's configured sandbox or permission profile. The tool does not elevate reviewers that cannot read the repository. See **Reviewer permissions** above.

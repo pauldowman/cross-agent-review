@@ -115,6 +115,42 @@ class ClassifyTest(unittest.TestCase):
         self.assertIn("did not return JSON", notice)
 
 
+class TailTest(unittest.TestCase):
+    def setUp(self):
+        self.review = review_module.load()
+
+    def transcript(self, lines=500):
+        return "\n".join(f"transcript line {number}" for number in range(lines))
+
+    def test_output_that_is_already_small_is_returned_unchanged(self):
+        text = "claude: could not reach the API\n"
+        self.assertEqual(self.review.tail(text), text)
+
+    def test_empty_output_is_returned_unchanged(self):
+        self.assertEqual(self.review.tail(""), "")
+
+    def test_a_transcript_is_cut_down_to_its_last_lines(self):
+        clipped = self.review.tail(self.transcript())
+        self.assertEqual(
+            len(clipped.splitlines()), self.review.STDERR_TAIL_LINES + 1
+        )
+
+    def test_the_end_is_what_survives(self):
+        clipped = self.review.tail(self.transcript())
+        self.assertIn("transcript line 499", clipped)
+        self.assertNotIn("transcript line 0\n", clipped)
+
+    def test_the_note_says_how_much_was_dropped(self):
+        text = self.transcript()
+        self.assertIn(f"of {len(text)} characters", self.review.tail(text))
+
+    def test_a_single_enormous_line_is_clipped_as_well(self):
+        clipped = self.review.tail("x" * 50000)
+        self.assertLessEqual(
+            len(clipped.splitlines()[-1]), self.review.STDERR_TAIL_CHARS
+        )
+
+
 class ClassifiedRunTest(SpawnTestCase):
     """The classification a full run_reviewer() call produces."""
 

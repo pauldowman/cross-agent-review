@@ -12,6 +12,9 @@ FAKE_HARNESS_MODE selects the behavior:
             FAKE_HARNESS_PIDFILE, then sleep past any sane timeout
   detached  like hang, but the grandchild starts its own session, so it
             survives a process-group kill and keeps the output pipes open
+  noisy     stream FAKE_HARNESS_STDERR_LINES lines of transcript to stderr,
+            then exit 3
+  noisy_hang  like noisy, but sleep past any sane timeout instead of exiting
 """
 
 import os
@@ -31,6 +34,14 @@ def sleep_with_grandchild(detached):
         pidfile.flush()
         os.fsync(pidfile.fileno())
     time.sleep(300)
+
+
+def stream_transcript():
+    """Imitate a harness that narrates its whole session on stderr."""
+    lines = int(os.environ.get("FAKE_HARNESS_STDERR_LINES", "2000"))
+    for number in range(lines):
+        sys.stderr.write(f"transcript line {number}\n")
+    sys.stderr.flush()
 
 
 def main():
@@ -55,6 +66,12 @@ def main():
         sleep_with_grandchild(detached=False)
     elif MODE == "detached":
         sleep_with_grandchild(detached=True)
+    elif MODE == "noisy":
+        stream_transcript()
+        return 3
+    elif MODE == "noisy_hang":
+        stream_transcript()
+        time.sleep(300)
     else:
         raise SystemExit(f"unknown FAKE_HARNESS_MODE {MODE!r}")
     return 0

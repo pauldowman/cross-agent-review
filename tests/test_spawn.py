@@ -177,6 +177,14 @@ class TimeoutConfigurationTest(SpawnTestCase):
             self.review.reviewer_timeout(), self.review.DEFAULT_TIMEOUT_SECONDS
         )
 
+    def test_the_default_fits_inside_the_command_timeout_the_skill_asks_for(self):
+        """SKILL.md tells the caller to allow 600s for the whole command.
+
+        A per-reviewer timeout at or above that budget never fires: the caller
+        kills the tool first, taking the reviews that did finish with it.
+        """
+        self.assertLess(self.review.DEFAULT_TIMEOUT_SECONDS, 600)
+
     def test_a_number_is_honored(self):
         self.set_env(REVIEW_TIMEOUT="12")
         self.assertEqual(self.review.reviewer_timeout(), 12)
@@ -255,6 +263,33 @@ class RunReviewerTest(SpawnTestCase):
                 wait_for_exit(grandchild),
                 f"grandchild {grandchild} survived the timeout kill",
             )
+
+    def test_a_timed_out_harness_reports_the_timeout_without_its_transcript(self):
+        self.set_env(FAKE_HARNESS_MODE="noisy_hang")
+
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=1)
+
+        self.assertEqual(run.status, self.review.STATUS_TIMEOUT)
+        self.assertIn(self.review.TIMEOUT_ENV_VAR, run.notice)
+        # The tail is present, so the bound below is measuring a clipped
+        # transcript rather than one that never reached the drain.
+        self.assertIn("transcript line 1999", run.stderr)
+        self.assertLessEqual(
+            len(run.stderr.splitlines()),
+            self.review.STDERR_TAIL_LINES + 1,
+            "a killed harness spilled its whole transcript",
+        )
+
+    def test_a_failing_harness_keeps_only_the_tail_of_its_diagnostics(self):
+        self.set_env(FAKE_HARNESS_MODE="noisy")
+
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
+
+        self.assertEqual(run.status, self.review.STATUS_NONZERO_EXIT)
+        self.assertLessEqual(
+            len(run.stderr.splitlines()), self.review.STDERR_TAIL_LINES + 1
+        )
+        self.assertIn("transcript line 1999", run.stderr)
 
     def test_a_detached_descendant_does_not_hang_the_review(self):
         with tempfile.TemporaryDirectory() as tmp:
