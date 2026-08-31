@@ -20,6 +20,11 @@ os.environ.setdefault(
     "REVIEW_DB", str(pathlib.Path(tempfile.gettempdir()) / "review-tests.db")
 )
 
+# A reviewer runs with REVIEW_ACTIVE set, so a reviewer asked to check this
+# repository inherits it and every test that calls main() hits the recursion
+# guard. The tests that care about the guard set it themselves.
+os.environ.pop("REVIEW_ACTIVE", None)
+
 # Routing now comes from a config file; tests get a fixture, never the
 # user's own, so a missing or edited personal config cannot break the suite.
 os.environ.setdefault(

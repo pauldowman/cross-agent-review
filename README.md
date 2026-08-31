@@ -83,6 +83,6 @@ The prompt tells reviewers to make no changes, but a prompt is not a security bo
 
 - `SIGKILL` on the tool itself leaks the reviewer subprocesses. `SIGINT` and `SIGTERM` are handled: reviewers are killed and the tool exits in milliseconds, though the interrupt path skips cleanup of codex's empty temp file in `/tmp`.
 - A reviewer that escapes its process group by starting its own session survives the timeout kill. The drain is bounded so this cannot hang the tool, but the process is leaked.
-- A failed reviewer's harness diagnostics are clipped to their last 20 lines, or 2000 characters, whichever is smaller. Codex narrates its whole session on stderr, and unclipped that transcript buries the reviews that succeeded under two orders of magnitude of noise.
+- A failed reviewer's harness diagnostics are clipped to a tail of at most 20 lines or 2000 characters, whichever is smaller, preceded by a line saying how much was dropped. Codex narrates its whole session on stderr, and unclipped that transcript buries the reviews that succeeded under two orders of magnitude of noise. The dropped part is gone: nothing records it.
 - `cost_usd` is recorded only for harnesses that report it — `claude` does; `codex` and `opencode` do not.
 - Reviewer access depends on each harness's configured sandbox or permission profile. The tool does not elevate reviewers that cannot read the repository. See **Reviewer permissions** above.

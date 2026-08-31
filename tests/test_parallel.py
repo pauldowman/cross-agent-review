@@ -203,19 +203,21 @@ class InterruptTest(ParallelTestCase):
     """An interrupted run must not leave paid-for reviewers running."""
 
     def test_live_reviewers_are_killed_on_demand(self):
-        # The context manager closes the pipes; the tracking set outlives the
-        # test, so nothing else would.
-        with subprocess.Popen(
+        # DEVNULL rather than PIPE: nothing here reads the output, and pipes
+        # would need closing by a `with` block whose exit waits on the child
+        # without a timeout -- turning a failed assertion into a 300s hang.
+        process = subprocess.Popen(
             ["sleep", "300"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             start_new_session=True,
-        ) as process:
-            self.review.track(process)
+        )
+        self.addCleanup(process.kill)
+        self.review.track(process)
 
-            self.assertEqual(self.review.kill_live_processes(), 1)
-            # Reap it here: os.kill(pid, 0) would still succeed on the zombie.
-            self.assertEqual(process.wait(timeout=5), -signal.SIGKILL)
+        self.assertEqual(self.review.kill_live_processes(), 1)
+        # Reap it here: os.kill(pid, 0) would still succeed on the zombie.
+        self.assertEqual(process.wait(timeout=5), -signal.SIGKILL)
 
     def test_a_finished_reviewer_is_no_longer_tracked(self):
         self.static_harness("alpha", reply("A", FIRST))

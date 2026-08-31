@@ -177,13 +177,16 @@ class TimeoutConfigurationTest(SpawnTestCase):
             self.review.reviewer_timeout(), self.review.DEFAULT_TIMEOUT_SECONDS
         )
 
-    def test_the_default_fits_inside_the_command_timeout_the_skill_asks_for(self):
+    def test_the_default_leaves_room_to_report_an_overrun(self):
         """SKILL.md tells the caller to allow 600s for the whole command.
 
-        A per-reviewer timeout at or above that budget never fires: the caller
-        kills the tool first, taking the reviews that did finish with it.
+        Reporting an overrun costs a drain per pipe on top of the timeout
+        itself, and all of it has to fit inside that budget, or the caller
+        kills the tool before it can say anything. Whether the timeout is
+        long enough for a real reviewer is a judgement no test can make.
         """
-        self.assertLess(self.review.DEFAULT_TIMEOUT_SECONDS, 600)
+        overhead = 2 * self.review.DRAIN_TIMEOUT_SECONDS
+        self.assertLess(self.review.DEFAULT_TIMEOUT_SECONDS + overhead, 600)
 
     def test_a_number_is_honored(self):
         self.set_env(REVIEW_TIMEOUT="12")
