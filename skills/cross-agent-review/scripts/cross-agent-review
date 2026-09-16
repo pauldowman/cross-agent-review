@@ -97,6 +97,10 @@ def omp_harness(model):
     what a reviewer may touch; this tool must not override it. A thinking
     level rides on the model string as `model:level`, so it stays a config
     choice like the model name itself.
+
+    `--no-session` keeps reviewer runs out of the user's own omp history,
+    where they would otherwise crowd the resume picker. Nothing is lost: the
+    review itself is recorded in this tool's ledger.
     """
     return Harness(
         "omp",
@@ -105,6 +109,7 @@ def omp_harness(model):
             "-p",
             "--mode",
             "json",
+            "--no-session",
             "--model",
             model,
             PROMPT_PLACEHOLDER,
@@ -572,13 +577,19 @@ def extract_opencode(stdout, output_path=None):
 
 
 def extract_omp(stdout, output_path=None):
-    """Take the last assistant message from omp's JSON event stream.
+    """Take the last assistant message carrying text from omp's event stream.
+
+    The last message is not always the reply: a run cut short by a time or
+    token limit can end on a tool call it never got to answer. Keeping the
+    last message that carries text preserves whatever the reviewer had
+    written by then instead of discarding it; whether that text is a
+    finished review is for the grade parser to decide.
 
     Cost is accumulated as the stream is read rather than taken from the
     final message, because omp reports it per message; a run that ends in an
     error still spent whatever it spent on the way there.
     """
-    last_message, cost = None, None
+    last_message, last_reply, cost = None, None, None
     for number, line in enumerate(stdout.splitlines(), 1):
         if not line.strip():
             continue
@@ -610,12 +621,23 @@ def extract_omp(stdout, output_path=None):
         if spent is not None:
             cost = (cost or 0) + spent
 
+        reply, problem = omp_reply(message)
+        if problem:
+            return Extracted(
+                "", cost, f"omp returned a malformed message on line {number}: {problem}"
+            )
+        if reply is not None:
+            last_reply = reply
+
     if last_message is None:
         return Extracted("", cost, "omp returned no assistant message")
     if last_message.get("stopReason") == "error":
         reported = last_message.get("errorMessage") or "no message given"
         return Extracted("", cost, f"omp reported an error: {reported}")
-    return omp_reply(last_message, cost)
+    if last_reply is None:
+        stopped = last_message.get("stopReason") or "none given"
+        return Extracted("", cost, f"omp returned no text (stopReason: {stopped})")
+    return Extracted(last_reply, cost, None)
 
 
 def message_cost(message):
@@ -626,18 +648,22 @@ def message_cost(message):
     return total if isinstance(total, (int, float)) and not isinstance(total, bool) else None
 
 
-def omp_reply(message, cost):
-    """The text an omp message carries, ignoring its tool calls and thinking."""
+def omp_reply(message):
+    """One message's own text, and what is wrong with the message, if anything.
+
+    A text of None means the message carried none, which is ordinary for a
+    message that only calls a tool. Content that is absent or is not a list
+    is malformed rather than textless -- omp always sends a list -- and
+    saying so keeps a protocol violation from passing as a quiet success.
+    """
     content = message.get("content")
     if not isinstance(content, list):
-        return Extracted("", cost, "omp returned a message with no content")
+        return None, "its content is not a list"
 
     parts = [part for part in content if isinstance(part, dict) and part.get("type") == "text"]
     if any(not isinstance(part.get("text"), str) for part in parts):
-        return Extracted("", cost, "omp returned a malformed text part")
-    if not parts:
-        return Extracted("", cost, "omp's last message carried no text")
-    return Extracted("\n".join(part["text"] for part in parts), cost, None)
+        return None, "a text part is not a string"
+    return ("\n".join(part["text"] for part in parts) if parts else None), None
 
 
 EXTRACTORS = {

@@ -55,6 +55,9 @@ class ConfiguredHarnessTest(unittest.TestCase):
         self.assertNotIn("--approval-mode", argv)
         self.assertNotIn("--auto-approve", argv)
 
+    def test_omp_keeps_reviewer_runs_out_of_the_users_session_history(self):
+        self.assertIn("--no-session", self.review.omp_harness("model-under-test").argv)
+
     def test_no_harness_bypasses_configured_permissions(self):
         for family, builder in self.review.HARNESSES.items():
             with self.subTest(harness=family):
@@ -287,9 +290,37 @@ class ExtractOmpTest(unittest.TestCase):
         )
         self.assertIn("no assistant message", self.review.extract_omp(stdout).error)
 
+    def test_a_review_survives_a_final_message_that_only_calls_a_tool(self):
+        stdout = "\n".join(
+            (
+                self.assistant(),
+                self.message_end(content=[{"type": "toolCall", "name": "bash"}]),
+            )
+        )
+        extracted = self.review.extract_omp(stdout)
+        self.assertEqual(extracted.text, REVIEW_BODY)
+        self.assertIsNone(extracted.error)
+
+    def test_a_run_cut_short_still_delivers_the_review_it_paid_for(self):
+        stdout = "\n".join(
+            (
+                self.assistant(),
+                self.message_end(
+                    content=[{"type": "toolCall", "name": "bash"}], stopReason="length"
+                ),
+            )
+        )
+        self.assertEqual(self.review.extract_omp(stdout).text, REVIEW_BODY)
+
     def test_a_last_message_without_text_is_an_error(self):
         stdout = self.message_end(content=[{"type": "toolCall", "name": "bash"}])
         self.assertIn("no text", self.review.extract_omp(stdout).error)
+
+    def test_no_text_anywhere_reports_why_omp_stopped(self):
+        stdout = self.message_end(
+            content=[{"type": "toolCall", "name": "bash"}], stopReason="length"
+        )
+        self.assertIn("length", self.review.extract_omp(stdout).error)
 
     def test_a_malformed_message_is_an_error(self):
         stdout = json.dumps({"type": "message_end", "message": "not a message"})
@@ -297,7 +328,26 @@ class ExtractOmpTest(unittest.TestCase):
 
     def test_a_malformed_text_part_is_an_error(self):
         stdout = self.message_end(content=[{"type": "text", "text": 42}])
-        self.assertIn("malformed text part", self.review.extract_omp(stdout).error)
+        self.assertIn("text part", self.review.extract_omp(stdout).error)
+
+    def test_a_message_whose_content_is_not_a_list_is_an_error(self):
+        stdout = self.message_end(content="a review, unwrapped")
+        self.assertIn("content", self.review.extract_omp(stdout).error)
+
+    def test_malformed_content_after_a_good_reply_does_not_pass_as_success(self):
+        stdout = "\n".join((self.assistant(), self.message_end(stopReason="stop")))
+        extracted = self.review.extract_omp(stdout)
+        self.assertEqual(extracted.text, "")
+        self.assertIn("content", extracted.error)
+
+    def test_a_malformed_text_part_in_an_earlier_message_is_an_error(self):
+        stdout = "\n".join(
+            (
+                self.message_end(content=[{"type": "text", "text": 42}]),
+                self.assistant(),
+            )
+        )
+        self.assertIn("text part", self.review.extract_omp(stdout).error)
 
 
 class OutputFileTest(SpawnTestCase):
