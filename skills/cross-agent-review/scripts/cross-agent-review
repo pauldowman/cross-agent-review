@@ -90,6 +90,28 @@ def opencode_harness(model):
     )
 
 
+def omp_harness(model):
+    """omp writes one JSON event per line in `--mode json`.
+
+    Approval behavior comes from the user's omp configuration, which decides
+    what a reviewer may touch; this tool must not override it. A thinking
+    level rides on the model string as `model:level`, so it stays a config
+    choice like the model name itself.
+    """
+    return Harness(
+        "omp",
+        (
+            "omp",
+            "-p",
+            "--mode",
+            "json",
+            "--model",
+            model,
+            PROMPT_PLACEHOLDER,
+        ),
+    )
+
+
 # Pinned because the user's config default can change latency and cost
 # invisibly and risks timing out.
 CODEX_REASONING_EFFORT = "medium"
@@ -100,6 +122,7 @@ HARNESSES = {
     "claude": claude_harness,
     "codex": codex_harness,
     "opencode": opencode_harness,
+    "omp": omp_harness,
 }
 
 EXAMPLE_CONFIG = """# Which reviewers review which author, for cross-agent-review.
@@ -116,6 +139,7 @@ reviewers = [
     { harness = "codex", model = "YOUR-CODEX-MODEL" },
     { harness = "claude", model = "YOUR-CLAUDE-MODEL" },
     { harness = "opencode", model = "YOUR-OPENCODE-MODEL" },
+    { harness = "omp", model = "YOUR-OMP-MODEL" },
 ]
 """
 
@@ -547,10 +571,80 @@ def extract_opencode(stdout, output_path=None):
     return Extracted(last_text, None, None)
 
 
+def extract_omp(stdout, output_path=None):
+    """Take the last assistant message from omp's JSON event stream.
+
+    Cost is accumulated as the stream is read rather than taken from the
+    final message, because omp reports it per message; a run that ends in an
+    error still spent whatever it spent on the way there.
+    """
+    last_message, cost = None, None
+    for number, line in enumerate(stdout.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return Extracted(
+                "", cost, f"omp returned invalid JSON on line {number}: {line[:200]!r}"
+            )
+        if not isinstance(event, dict):
+            return Extracted(
+                "",
+                cost,
+                f"omp returned an unexpected event on line {number}: {line[:200]!r}",
+            )
+
+        if event.get("type") != "message_end":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return Extracted(
+                "", cost, f"omp returned a malformed message on line {number}"
+            )
+        if message.get("role") != "assistant":
+            continue
+
+        last_message = message
+        spent = message_cost(message)
+        if spent is not None:
+            cost = (cost or 0) + spent
+
+    if last_message is None:
+        return Extracted("", cost, "omp returned no assistant message")
+    if last_message.get("stopReason") == "error":
+        reported = last_message.get("errorMessage") or "no message given"
+        return Extracted("", cost, f"omp reported an error: {reported}")
+    return omp_reply(last_message, cost)
+
+
+def message_cost(message):
+    """What one omp message cost, or None if it does not say."""
+    usage = message.get("usage")
+    cost = usage.get("cost") if isinstance(usage, dict) else None
+    total = cost.get("total") if isinstance(cost, dict) else None
+    return total if isinstance(total, (int, float)) and not isinstance(total, bool) else None
+
+
+def omp_reply(message, cost):
+    """The text an omp message carries, ignoring its tool calls and thinking."""
+    content = message.get("content")
+    if not isinstance(content, list):
+        return Extracted("", cost, "omp returned a message with no content")
+
+    parts = [part for part in content if isinstance(part, dict) and part.get("type") == "text"]
+    if any(not isinstance(part.get("text"), str) for part in parts):
+        return Extracted("", cost, "omp returned a malformed text part")
+    if not parts:
+        return Extracted("", cost, "omp's last message carried no text")
+    return Extracted("\n".join(part["text"] for part in parts), cost, None)
+
+
 EXTRACTORS = {
     "claude": extract_claude,
     "codex": extract_codex,
     "opencode": extract_opencode,
+    "omp": extract_omp,
     "plain": extract_plain,
 }
 

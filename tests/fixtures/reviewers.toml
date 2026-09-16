@@ -13,6 +13,7 @@ pattern = "^gpt|^codex"
 reviewers = [
     { harness = "claude", model = "claude-opus-5" },
     { harness = "opencode", model = "opencode/x-preview-f-free" },
+    { harness = "omp", model = "vendor/x-preview-m:high" },
 ]
 
 [[rule]]

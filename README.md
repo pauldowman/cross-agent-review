@@ -19,7 +19,7 @@ npx skills add pauldowman/cross-agent-review --skill summarize-review-data --glo
 
 The [`skills` CLI](https://www.npmjs.com/package/skills) installs the complete skill directory for each selected agent, including its bundled script. Each skill resolves its script relative to its own `SKILL.md`, so no separate executable or `PATH` setup is needed.
 
-Single-file Python 3, standard library only. Requires the harnesses selected by the routing config; `claude`, `codex`, and `opencode` are currently supported. Reviewer models are pinned in `reviewers.toml`, and codex's reasoning effort is pinned in the bundled script, so a reviewer never silently inherits either value from a harness's user settings.
+Single-file Python 3, standard library only. Requires the harnesses selected by the routing config; `claude`, `codex`, `opencode`, and `omp` are currently supported. Reviewer models are pinned in `reviewers.toml`, and codex's reasoning effort is pinned in the bundled script, so a reviewer never silently inherits either value from a harness's user settings. omp reads its thinking level from the model string, so pin it there as `model:level` — `deepseek/deepseek-v4-flash:high` — or omp picks the level from its own settings.
 
 ## Configuring who reviews whom
 
@@ -45,6 +45,7 @@ pattern = "."
 reviewers = [
     { harness = "codex", model = "gpt-5.6-sol" },
     { harness = "claude", model = "claude-opus-5" },
+    { harness = "omp", model = "deepseek/deepseek-v4-flash:high" },
 ]
 ```
 
@@ -71,16 +72,18 @@ It uses the same `REVIEW_DB` and default database path as `cross-agent-review`. 
 
 ### Reviewer permissions
 
-The tool does not pass flags that bypass permission checks or grant a reviewer unrestricted access. Codex inherits its sandbox and approval behavior from the user's Codex configuration. Claude uses `--permission-mode plan`, and OpenCode uses `run --agent plan`.
+The tool does not pass flags that bypass permission checks or grant a reviewer unrestricted access. Codex and omp inherit their sandbox and approval behavior from the user's own configuration for those tools. Claude uses `--permission-mode plan`, and OpenCode uses `run --agent plan`.
+
+Note what inheriting means for omp specifically: its `tools.approvalMode` defaults to `yolo`, which auto-approves every tool, so an omp reviewer may edit files and run commands unless you configure otherwise. Setting `tools.approvalMode: always-ask` restricts a reviewer to read-only tools, because a non-interactive run has no way to approve anything else — but that also blocks `bash`, and a reviewer that cannot run `git diff` reviews the files rather than the change. Adding `tools.approval.bash: allow` alongside it restores `git diff` while still denying the write and edit tools, which is roughly what OpenCode's plan agent allows. Per-tool policies are honored in every approval mode.
 
 Every reviewer is expected to be configured with enough permission to read the repository and run non-mutating inspection commands such as `git diff`. The tool does not elevate a reviewer that cannot read the files; that reviewer may return `NA` or a failed run instead. Configure each harness with the least privilege that works in the environment.
 
-The prompt tells reviewers to make no changes, but a prompt is not a security boundary. The harness's configured sandbox or permission profile is responsible for enforcing access. OpenCode's plan agent denies its dedicated edit tool but still allows shell commands, so its actual protections depend on the surrounding configuration. OpenCode runs with `--format json`, and the tool extracts the last completed text event as the review.
+The prompt tells reviewers to make no changes, but a prompt is not a security boundary. The harness's configured sandbox or permission profile is responsible for enforcing access. OpenCode's plan agent denies its dedicated edit tool but still allows shell commands, so its actual protections depend on the surrounding configuration. OpenCode runs with `--format json`, and the tool extracts the last completed text event as the review. omp runs with `--mode json`, and the tool takes the text of its last assistant message as the review.
 
 ## Known limits
 
 - `SIGKILL` on the tool itself leaks the reviewer subprocesses. `SIGINT` and `SIGTERM` are handled: reviewers are killed and the tool exits in milliseconds, though the interrupt path skips cleanup of codex's empty temp file in `/tmp`.
 - A reviewer that escapes its process group by starting its own session survives the timeout kill. The drain is bounded so this cannot hang the tool, but the process is leaked.
 - A failed reviewer's harness diagnostics are clipped to a tail of at most 20 lines or 2000 characters, whichever is smaller, preceded by a line saying how much was dropped. Codex narrates its whole session on stderr, and unclipped that transcript buries the reviews that succeeded under two orders of magnitude of noise. The dropped part is gone: nothing records it.
-- `cost_usd` is recorded only for harnesses that report it — `claude` does; `codex` and `opencode` do not.
+- `cost_usd` is recorded only for harnesses that report it — `claude` and `omp` do; `codex` and `opencode` do not.
 - Reviewer access depends on each harness's configured sandbox or permission profile. The tool does not elevate reviewers that cannot read the repository. See **Reviewer permissions** above.

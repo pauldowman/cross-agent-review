@@ -9,14 +9,15 @@ from test_spawn import GOAL, PROJECT, SpawnTestCase, run_main
 
 REVIEW_BODY = "The codex reviewer found an unhandled error path in the parser."
 
-# Claude and OpenCode have a safe review mode. Codex deliberately inherits the
-# user's configured permissions rather than overriding or bypassing them.
+# Claude and OpenCode have a safe review mode. Codex and omp deliberately
+# inherit the user's configured permissions rather than overriding or
+# bypassing them.
 PERMISSION_FLAGS = {
     "claude": ("--permission-mode", "plan"),
     "opencode": ("--agent", "plan"),
 }
 
-DANGEROUS_PERMISSION_MARKERS = ("--dangerously-", "danger-full-access")
+DANGEROUS_PERMISSION_MARKERS = ("--dangerously-", "danger-full-access", "yolo")
 
 
 class ConfiguredHarnessTest(unittest.TestCase):
@@ -48,6 +49,12 @@ class ConfiguredHarnessTest(unittest.TestCase):
         self.assertNotIn("-s", argv)
         self.assertNotIn("--sandbox", argv)
 
+    def test_omp_inherits_the_users_configured_permissions(self):
+        argv = self.review.omp_harness("model-under-test").argv
+
+        self.assertNotIn("--approval-mode", argv)
+        self.assertNotIn("--auto-approve", argv)
+
     def test_no_harness_bypasses_configured_permissions(self):
         for family, builder in self.review.HARNESSES.items():
             with self.subTest(harness=family):
@@ -55,7 +62,7 @@ class ConfiguredHarnessTest(unittest.TestCase):
                 dangerous = [
                     argument
                     for argument in argv
-                    if argument == "--auto"
+                    if argument in ("--auto", "--auto-approve")
                     or any(marker in argument for marker in DANGEROUS_PERMISSION_MARKERS)
                 ]
                 self.assertEqual(dangerous, [])
@@ -93,6 +100,13 @@ class DryRunOfConfiguredReviewersTest(unittest.TestCase):
         )
         self.assertIn("opencode/x-preview-f-free via opencode", out)
         self.assertIn("--format json", out)
+
+    def test_the_omp_command_requests_json_events(self):
+        _, out, _ = run_main(
+            self.review, "gpt-5.6-sol", PROJECT, GOAL, "the branch", "--dry-run"
+        )
+        self.assertIn("vendor/x-preview-m:high via omp", out)
+        self.assertIn("--mode json", out)
 
     def test_a_dry_run_creates_no_output_files(self):
         before = set(pathlib.Path(tempfile.gettempdir()).glob("review-*"))
@@ -197,6 +211,93 @@ class ExtractOpenCodeTest(unittest.TestCase):
 
     def test_opencode_reports_no_cost(self):
         self.assertIsNone(self.review.extract_opencode(self.text_event(REVIEW_BODY)).cost_usd)
+
+
+class ExtractOmpTest(unittest.TestCase):
+    def setUp(self):
+        self.review = review_module.load()
+
+    def message_end(self, role="assistant", **fields):
+        return json.dumps({"type": "message_end", "message": {"role": role, **fields}})
+
+    def assistant(self, text=REVIEW_BODY, **fields):
+        return self.message_end(content=[{"type": "text", "text": text}], **fields)
+
+    def test_the_last_assistant_message_is_the_review(self):
+        stdout = "\n".join(
+            (
+                self.assistant("I will inspect the diff."),
+                self.message_end(
+                    role="toolResult", content=[{"type": "text", "text": "a diff"}]
+                ),
+                self.assistant(),
+            )
+        )
+        extracted = self.review.extract_omp(stdout)
+        self.assertEqual(extracted.text, REVIEW_BODY)
+        self.assertIsNone(extracted.error)
+
+    def test_tool_calls_and_thinking_are_not_part_of_the_review(self):
+        stdout = self.message_end(
+            content=[
+                {"type": "thinking", "thinking": "the author forgot the error path"},
+                {"type": "toolCall", "name": "bash"},
+                {"type": "text", "text": REVIEW_BODY},
+            ]
+        )
+        self.assertEqual(self.review.extract_omp(stdout).text, REVIEW_BODY)
+
+    def test_cost_is_summed_over_every_assistant_message(self):
+        stdout = "\n".join(
+            (
+                self.assistant("reading the diff", usage={"cost": {"total": 0.01}}),
+                self.assistant(usage={"cost": {"total": 0.002}}),
+            )
+        )
+        self.assertAlmostEqual(self.review.extract_omp(stdout).cost_usd, 0.012)
+
+    def test_absent_cost_is_none(self):
+        self.assertIsNone(self.review.extract_omp(self.assistant()).cost_usd)
+
+    def test_an_errored_message_is_not_a_review(self):
+        stdout = self.message_end(
+            content=[], stopReason="error", errorMessage="401 Authentication Fails"
+        )
+        extracted = self.review.extract_omp(stdout)
+        self.assertEqual(extracted.text, "")
+        self.assertIn("401 Authentication Fails", extracted.error)
+
+    def test_what_a_failed_run_already_spent_is_still_reported(self):
+        stdout = "\n".join(
+            (
+                self.assistant("reading the diff", usage={"cost": {"total": 0.004}}),
+                self.message_end(
+                    content=[], stopReason="error", errorMessage="out of credit"
+                ),
+            )
+        )
+        self.assertEqual(self.review.extract_omp(stdout).cost_usd, 0.004)
+
+    def test_invalid_json_is_an_error(self):
+        self.assertIn("invalid JSON", self.review.extract_omp("not json").error)
+
+    def test_a_stream_without_an_assistant_message_is_an_error(self):
+        stdout = self.message_end(
+            role="user", content=[{"type": "text", "text": "the prompt"}]
+        )
+        self.assertIn("no assistant message", self.review.extract_omp(stdout).error)
+
+    def test_a_last_message_without_text_is_an_error(self):
+        stdout = self.message_end(content=[{"type": "toolCall", "name": "bash"}])
+        self.assertIn("no text", self.review.extract_omp(stdout).error)
+
+    def test_a_malformed_message_is_an_error(self):
+        stdout = json.dumps({"type": "message_end", "message": "not a message"})
+        self.assertIn("malformed", self.review.extract_omp(stdout).error)
+
+    def test_a_malformed_text_part_is_an_error(self):
+        stdout = self.message_end(content=[{"type": "text", "text": 42}])
+        self.assertIn("malformed text part", self.review.extract_omp(stdout).error)
 
 
 class OutputFileTest(SpawnTestCase):

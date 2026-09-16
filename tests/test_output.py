@@ -13,6 +13,19 @@ def opencode_text_event(text=GRADED_REVIEW):
     return json.dumps({"type": "text", "part": {"type": "text", "text": text}})
 
 
+def omp_message_end(text=GRADED_REVIEW, **fields):
+    return json.dumps(
+        {
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": text}],
+                **fields,
+            },
+        }
+    )
+
+
 class ExtractClaudeTest(unittest.TestCase):
     def setUp(self):
         self.review = review_module.load()
@@ -206,6 +219,43 @@ class ClassifiedRunTest(SpawnTestCase):
             FAKE_HARNESS_MODE="nonzero_both",
             FAKE_HARNESS_OUTPUT=json.dumps(
                 {"type": "error", "error": {"data": {"message": "out of credit"}}}
+            ),
+        )
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
+        self.assertEqual(run.status, self.review.STATUS_NONZERO_EXIT)
+        self.assertIn("harness exited 3", run.notice)
+        self.assertIn("out of credit", run.notice)
+
+    def test_an_omp_assistant_message_becomes_a_review(self):
+        self.use_fake_harness(family="omp")
+        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=omp_message_end())
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
+        self.assertEqual(run.status, self.review.STATUS_OK)
+        self.assertEqual(run.text, LONG_ENOUGH_REVIEW)
+
+    def test_omp_cost_reaches_the_run(self):
+        self.use_fake_harness(family="omp")
+        self.set_env(
+            FAKE_HARNESS_MODE="echo",
+            FAKE_HARNESS_OUTPUT=omp_message_end(usage={"cost": {"total": 0.0031}}),
+        )
+        run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
+        self.assertEqual(run.cost_usd, 0.0031)
+
+    def test_an_omp_error_message_and_nonzero_exit_are_both_preserved(self):
+        self.use_fake_harness(family="omp")
+        self.set_env(
+            FAKE_HARNESS_MODE="nonzero_both",
+            FAKE_HARNESS_OUTPUT=json.dumps(
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "content": [],
+                        "stopReason": "error",
+                        "errorMessage": "out of credit",
+                    },
+                }
             ),
         )
         run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
