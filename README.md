@@ -82,7 +82,8 @@ The prompt tells reviewers to make no changes, but a prompt is not a security bo
 
 ## Known limits
 
-- `SIGKILL` on the tool itself leaks the reviewer subprocesses. `SIGINT` and `SIGTERM` are handled: reviewers are killed and the tool exits in milliseconds, though the interrupt path skips cleanup of codex's empty temp file in `/tmp`.
+- `SIGKILL` on the tool itself leaks the reviewer subprocesses. `SIGINT` and `SIGTERM` are handled: reviewers are killed and the tool exits in milliseconds, though the interrupt path skips cleanup of codex's empty temp file in `/tmp`, and of the run's review directory even when it is empty.
+- Each run leaves a `cross-agent-review-<run_id>-*` directory in the system temp directory, holding one file per delivered review, so the calling agent can read them after the tool exits. Reviews can quote the code under review. The files are readable only by you, nothing deletes them, and the database already keeps every review's text, so clearing them is up to you or the OS's temp cleanup.
 - A reviewer that escapes its process group by starting its own session survives the timeout kill. The drain is bounded so this cannot hang the tool, but the process is leaked.
 - A failed reviewer's harness diagnostics are clipped to a tail of at most 20 lines or 2000 characters, whichever is smaller, preceded by a line saying how much was dropped. Codex narrates its whole session on stderr, and unclipped that transcript buries the reviews that succeeded under two orders of magnitude of noise. The dropped part is gone: nothing records it.
 - `cost_usd` is recorded only for harnesses that report it — `claude` and `omp` do; `codex` and `opencode` do not.

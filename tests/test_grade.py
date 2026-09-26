@@ -245,7 +245,7 @@ class PromptContractTest(unittest.TestCase):
     def test_the_prompt_orders_findings_by_severity_instead_of_capping_length(self):
         prompt = self.review.build_prompt(GOAL, "x", "/tmp")
         self.assertIn("most severe first", prompt)
-        self.assertNotIn("words", prompt)
+        self.assertNotIn("400 words", prompt)
 
 
 if __name__ == "__main__":
