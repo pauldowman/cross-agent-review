@@ -239,8 +239,10 @@ class PromptContractTest(unittest.TestCase):
         self.assertIn("Make no changes", prompt)
         self.assertIn("git state", prompt)
 
-    def test_the_prompt_caps_the_review_length(self):
-        self.assertIn("400 words", self.review.build_prompt(GOAL, "x", "/tmp"))
+    def test_the_prompt_orders_findings_by_severity_instead_of_capping_length(self):
+        prompt = self.review.build_prompt(GOAL, "x", "/tmp")
+        self.assertIn("most severe first", prompt)
+        self.assertNotIn("words", prompt)
 
 
 if __name__ == "__main__":

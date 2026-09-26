@@ -402,8 +402,8 @@ Make no changes. Leave the working copy and the git state exactly as you found \
 them.
 
 Judge the work against that goal: whether it achieves it, what is wrong, what \
-is risky, and what should change before this ships. Keep the review under 400 \
-words.
+is risky, and what should change before this ships. List findings most severe \
+first. Be concise, and leave out style nits unless they matter.
 
 Grade the work on this scale:
   A  ship as is
