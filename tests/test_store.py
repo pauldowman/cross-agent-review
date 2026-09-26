@@ -11,7 +11,7 @@ from unittest import mock
 
 import review_module
 from test_grade import reply
-from test_spawn import GOAL, PROJECT, LONG_ENOUGH_REVIEW, SpawnTestCase, run_main
+from test_spawn import GOAL, PROJECT, LONG_ENOUGH_REVIEW, SpawnTestCase, read_reviews, run_main
 
 
 def rows(path):
@@ -236,7 +236,7 @@ class DatabaseFailureTest(SpawnTestCase):
         )
         code, out, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         self.assertEqual(code, self.review.EXIT_OK)
-        self.assertIn("retry loop", out)
+        self.assertIn("retry loop", read_reviews(out))
         self.assertIn("not recording", err)
 
     def test_a_corrupt_database_still_delivers_the_review(self):
@@ -245,7 +245,7 @@ class DatabaseFailureTest(SpawnTestCase):
 
         code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         self.assertEqual(code, self.review.EXIT_OK)
-        self.assertIn("retry loop", out)
+        self.assertIn("retry loop", read_reviews(out))
 
     def test_a_database_from_a_future_schema_is_refused_not_rewritten(self):
         connection = self.review.open_database(self.db_path)
@@ -329,7 +329,7 @@ class RecordedRunTest(SpawnTestCase):
 
         (row,) = rows(self.db_path)
         self.assertEqual(row["grade"], "D")
-        self.assertNotIn("D</grade>", out)
+        self.assertNotIn("D</grade>", out + read_reviews(out))
 
     def test_the_not_found_sentinel_is_recorded_as_its_grade(self):
         self.echo(reply("NA", "I could not find the branch you named anywhere."))

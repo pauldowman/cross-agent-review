@@ -7,7 +7,7 @@ import time
 import unittest
 
 from test_grade import reply
-from test_spawn import FIXTURE, GOAL, PROJECT, SpawnTestCase, run_main
+from test_spawn import FIXTURE, GOAL, PROJECT, SpawnTestCase, read_reviews, run_main
 
 FIRST = "The first reviewer found an off-by-one in the retry loop."
 SECOND = "The second reviewer found a missing index on the lookup table."
@@ -68,11 +68,11 @@ class TwoReviewersTest(ParallelTestCase):
         code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         self.assertEqual(code, self.review.EXIT_OK)
-        self.assertIn(FIRST, out)
-        self.assertIn(SECOND, out)
+        self.assertIn(FIRST, read_reviews(out))
+        self.assertIn(SECOND, read_reviews(out))
         self.assertIn("review from alpha", out)
         self.assertIn("review from beta", out)
-        self.assertEqual(out.count("end of review"), 2)
+        self.assertEqual(read_reviews(out).count("end of review"), 2)
 
     def test_both_runs_are_recorded_under_one_run_id(self):
         self.static_harness("alpha", reply("A", FIRST))
@@ -100,8 +100,8 @@ class TwoReviewersTest(ParallelTestCase):
         elapsed = time.monotonic() - started
 
         self.assertEqual(code, self.review.EXIT_OK)
-        self.assertIn(FIRST, out)
-        self.assertIn(SECOND, out)
+        self.assertIn(FIRST, read_reviews(out))
+        self.assertIn(SECOND, read_reviews(out))
         # Concurrent runs finish in about `delay`; sequential ones take 2x.
         # Half-way between the two keeps the assertion meaningful without
         # making it sensitive to load.
@@ -121,7 +121,7 @@ class PartialFailureTest(ParallelTestCase):
         code, out, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         self.assertEqual(code, self.review.EXIT_OK)
-        self.assertIn(FIRST, out)
+        self.assertIn(FIRST, read_reviews(out))
         self.assertIn("beta via plain failed", err)
 
     def test_a_failed_reviewer_is_still_recorded(self):
@@ -176,7 +176,7 @@ class PartialFailureTest(ParallelTestCase):
         code, out, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         self.assertEqual(code, self.review.EXIT_OK)
-        self.assertIn(FIRST, out)
+        self.assertIn(FIRST, read_reviews(out))
         self.assertIn("beta via plain failed", err)
         self.assertNotIn("transcript line 0\n", err)
         self.assertLess(
@@ -195,7 +195,7 @@ class PartialFailureTest(ParallelTestCase):
         code, out, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         self.assertEqual(code, self.review.EXIT_OK)
-        self.assertIn(FIRST, out)
+        self.assertIn(FIRST, read_reviews(out))
         self.assertIn("beta via plain could not be run", err)
 
 
@@ -250,7 +250,7 @@ class ThreeReviewersTest(ParallelTestCase):
         code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
 
         self.assertEqual(code, self.review.EXIT_OK)
-        self.assertEqual(out.count("end of review"), 3)
+        self.assertEqual(read_reviews(out).count("end of review"), 3)
         self.assertEqual(len(rows(self.db_path)), 3)
 
 

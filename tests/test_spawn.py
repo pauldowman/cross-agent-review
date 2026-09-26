@@ -53,6 +53,25 @@ def run_main(review, *argv):
     return code, out.getvalue(), err.getvalue()
 
 
+REVIEW_FILE_LINE = re.compile(r"^review from .* \[\w+\]: (.+)$", re.MULTILINE)
+
+
+def review_paths(out):
+    return [pathlib.Path(path) for path in REVIEW_FILE_LINE.findall(out)]
+
+
+def read_reviews(out):
+    """The review files named on stdout, concatenated.
+
+    Fails when stdout names none, so a negative assertion on the result
+    cannot pass merely because no review was read.
+    """
+    paths = review_paths(out)
+    if not paths:
+        raise AssertionError(f"stdout named no review files:\n{out}")
+    return "".join(path.read_text() for path in paths)
+
+
 class SpawnTestCase(unittest.TestCase):
     """Each test gets a freshly loaded module whose tables it may rewrite."""
 
@@ -61,6 +80,16 @@ class SpawnTestCase(unittest.TestCase):
         self.harness_argv = {}
         self.use_fake_harness()
         self.use_temporary_database()
+        self.use_temporary_tempdir()
+
+    def use_temporary_tempdir(self):
+        """Keep the review files each run leaves behind out of the real /tmp."""
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        patcher = mock.patch.object(tempfile, "tempdir", directory.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tempdir = pathlib.Path(directory.name)
 
     def use_temporary_database(self):
         """Keep every test off the real ~/.local/share/review/reviews.db."""
@@ -328,11 +357,46 @@ class RunReviewerTest(SpawnTestCase):
 
 
 class MainOutputTest(SpawnTestCase):
-    def test_review_text_is_printed_to_stdout(self):
+    def test_the_review_is_saved_to_a_file_whose_path_is_printed(self):
         self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=GRADED_REVIEW)
         code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         self.assertEqual(code, self.review.EXIT_OK)
+        self.assertNotIn(LONG_ENOUGH_REVIEW, out)
+        [path] = review_paths(out)
+        self.assertTrue(path.is_relative_to(self.tempdir))
+        self.assertIn(LONG_ENOUGH_REVIEW, path.read_text())
+
+    def test_a_model_name_with_path_characters_makes_a_safe_file_name(self):
+        self.install_harness("vendor/model:high", "plain", self.harness_argv["plain", "fake"])
+        self.route_to(self.review.Reviewer("plain", "vendor/model:high"))
+        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=GRADED_REVIEW)
+        _, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
+        [path] = review_paths(out)
+        self.assertTrue(path.name.startswith("plain-vendor_model_high-"))
+
+    def test_reviews_are_printed_when_they_cannot_be_saved(self):
+        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=GRADED_REVIEW)
+        with mock.patch.object(tempfile, "mkdtemp", side_effect=OSError("disk full")):
+            code, out, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
+        self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn(LONG_ENOUGH_REVIEW, out)
+        self.assertIn("end of review", out)
+        self.assertIn("disk full", err)
+
+    def test_one_review_is_printed_when_its_file_cannot_be_written(self):
+        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=GRADED_REVIEW)
+        real_mkstemp = tempfile.mkstemp
+
+        def refuse_review_files(*args, dir=None, **kwargs):
+            if dir is not None:
+                raise OSError("read-only file system")
+            return real_mkstemp(*args, **kwargs)
+
+        with mock.patch.object(tempfile, "mkstemp", side_effect=refuse_review_files):
+            code, out, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
+        self.assertEqual(code, self.review.EXIT_OK)
+        self.assertIn(LONG_ENOUGH_REVIEW, out)
+        self.assertIn("read-only file system", err)
 
     def test_a_failed_reviewer_reports_on_stderr_and_exits_all_failed(self):
         self.use_fake_harness(
@@ -342,6 +406,7 @@ class MainOutputTest(SpawnTestCase):
         self.assertEqual(code, self.review.EXIT_ALL_FAILED)
         self.assertEqual(out, "")
         self.assertIn("harness_missing", err)
+        self.assertEqual(list(self.tempdir.iterdir()), [], "an empty review directory was left behind")
 
 
 class RecursionGuardTest(SpawnTestCase):
