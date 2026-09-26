@@ -17,11 +17,12 @@ The `scripts/cross-agent-review` reference is relative to this skill's root. Res
 | ------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `author`      | **your own** model name, precise and including the version — `claude-opus-5`, not `claude` or `opus`. This decides who reviews you. |
 | `project`     | the repository name, e.g. `$(basename "$PWD")`                                                                                      |
-| `goal`        | what the work was trying to achieve, in a sentence                                                                                  |
+| `goal`        | what the work was trying to achieve, in a sentence. If you are working from a plan file, name its path and the step, so reviewers can read the plan and judge the work against that step |
 | `description` | what to review: `the uncommitted changes`, `the current branch`, or a path                                                          |
 
 ```
 python3 scripts/cross-agent-review claude-opus-5 my-app "add cursor pagination to the users endpoint" "the uncommitted changes"
+python3 scripts/cross-agent-review claude-opus-5 my-app "step 2 of agent-planning/03-add-view-page.md: add the empty page and routes" "the current branch"
 ```
 
 **Set the Bash timeout to 600000 ms.** Reviewers are real agents reading real code; two of them take a few minutes, and the default 120s timeout will kill the run mid-review.
