@@ -1,17 +1,17 @@
 ---
-name: summarize-review-data
+name: cross-agent-review-summarize
 description: Summarize the cross-agent-review SQLite ledger to compare how authors are graded, how reviewers tend to grade, reviewer agreement, and collection reliability. Use when the user asks for review statistics, grade averages, reviewer bias, or trends in recorded cross-agent reviews.
 ---
 
 # Summarize Review Data
 
-Run the bundled `scripts/summarize-review-data` and use its Markdown report as the evidence for the answer. Resolve the script relative to this `SKILL.md`; it may be installed somewhere other than the current repository.
+Run the bundled `scripts/cross-agent-review-summarize` and use its Markdown report as the evidence for the answer. Resolve the script relative to this `SKILL.md`; it may be installed somewhere other than the current repository.
 
 By default the script reads `REVIEW_DB`, then `$XDG_DATA_HOME/cross-agent-review/reviews.db`, then `~/.local/share/cross-agent-review/reviews.db`. It opens the ledger read-only. Pass `--db PATH`, `--project NAME`, or `--since DATE_OR_TIMESTAMP` only when the user asks for that scope.
 
 ```bash
-python3 scripts/summarize-review-data
-python3 scripts/summarize-review-data --project my-app --since 2026-08-01
+python3 scripts/cross-agent-review-summarize
+python3 scripts/cross-agent-review-summarize --project my-app --since 2026-08-01
 ```
 
 Lead with the author results the user asked for. For every comparison, retain the mean, grade distribution, and sample size together. The report maps the ordinal grades to `A=4`, `B=3`, `C=2`, `D=1`, `F=0`; `NA`, missing grades, and failed attempts are excluded from the mean but remain visible in coverage and status counts.

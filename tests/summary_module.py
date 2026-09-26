@@ -6,7 +6,7 @@ import types
 
 SCRIPT = (
     pathlib.Path(__file__).resolve().parent.parent
-    / "skills/summarize-review-data/scripts/summarize-review-data"
+    / "skills/cross-agent-review-summarize/scripts/cross-agent-review-summarize"
 )
 
 

@@ -10,7 +10,7 @@ import sys
 from collections import Counter, defaultdict, namedtuple
 
 
-TOOL_NAME = "summarize-review-data"
+TOOL_NAME = "cross-agent-review-summarize"
 DB_ENV_VAR = "REVIEW_DB"
 # This is cross-agent-review's STATUS_OK, repeated so this skill stays standalone.
 GRADED_STATUS = "ok"

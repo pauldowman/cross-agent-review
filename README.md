@@ -14,7 +14,7 @@ In addition to giving feedback on what to fix, it also uses a standard rubric to
 
 ```
 npx skills add pauldowman/cross-agent-review --skill cross-agent-review --global --agent '*'
-npx skills add pauldowman/cross-agent-review --skill summarize-review-data --global --agent '*'
+npx skills add pauldowman/cross-agent-review --skill cross-agent-review-summarize --global --agent '*'
 ```
 
 The [`skills` CLI](https://www.npmjs.com/package/skills) installs the complete skill directory for each selected agent, including its bundled script. Each skill resolves its script relative to its own `SKILL.md`, so no separate executable or `PATH` setup is needed.
@@ -61,11 +61,11 @@ The calling agent's own command timeout has to be larger than `REVIEW_TIMEOUT`, 
 
 ## Summarizing review data
 
-The `summarize-review-data` skill reads the ledger without modifying it and reports author averages, grade distributions, reviewer tendencies, author-by-reviewer results, reviewer agreement, and collection failures. Means use the ordinal mapping `A=4`, `B=3`, `C=2`, `D=1`, `F=0`; the report always keeps the distribution and sample size beside the mean.
+The `cross-agent-review-summarize` skill reads the ledger without modifying it and reports author averages, grade distributions, reviewer tendencies, author-by-reviewer results, reviewer agreement, and collection failures. Means use the ordinal mapping `A=4`, `B=3`, `C=2`, `D=1`, `F=0`; the report always keeps the distribution and sample size beside the mean.
 
 ```
-python3 skills/summarize-review-data/scripts/summarize-review-data
-python3 skills/summarize-review-data/scripts/summarize-review-data --project my-app --since 2026-08-01
+python3 skills/cross-agent-review-summarize/scripts/cross-agent-review-summarize
+python3 skills/cross-agent-review-summarize/scripts/cross-agent-review-summarize --project my-app --since 2026-08-01
 ```
 
 It uses the same `REVIEW_DB` and default database path as `cross-agent-review`. `NA` and failed or unparsed attempts are excluded from means but included in coverage and status counts.
