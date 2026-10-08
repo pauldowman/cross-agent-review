@@ -12,7 +12,7 @@ from collections import Counter, defaultdict, namedtuple
 
 TOOL_NAME = "cross-agent-review-summarize"
 DB_ENV_VAR = "REVIEW_DB"
-# This is cross-agent-review's STATUS_OK, repeated so this skill stays standalone.
+# The ledger uses this status for successfully parsed reviews.
 GRADED_STATUS = "ok"
 GRADE_ORDER = ("A", "B", "C", "D", "F")
 GRADE_SCORES = {grade: 4 - index for index, grade in enumerate(GRADE_ORDER)}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cross-Agent Advice"
+  short_description: "Ask other agents for advice and record your decision"
+  default_prompt: "Use $cross-agent-advice to weigh a contested implementation decision and record the choice."

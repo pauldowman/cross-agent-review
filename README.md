@@ -14,12 +14,15 @@ In addition to giving feedback on what to fix, it also uses a standard rubric to
 
 ```
 npx skills add pauldowman/cross-agent-review --skill cross-agent-review --global --agent '*'
+npx skills add pauldowman/cross-agent-review --skill cross-agent-advice --global --agent '*'
 npx skills add pauldowman/cross-agent-review --skill cross-agent-review-summarize --global --agent '*'
 ```
 
 The [`skills` CLI](https://www.npmjs.com/package/skills) installs the complete skill directory for each selected agent, including its bundled script. Each skill resolves its script relative to its own `SKILL.md`, so no separate executable or `PATH` setup is needed.
 
-Single-file Python 3, standard library only. Requires the harnesses selected by the routing config; `claude`, `codex`, `opencode`, and `omp` are currently supported. Reviewer models and reasoning efforts are pinned in `reviewers.toml`. Every reviewer requires an explicit `effort` field. For omp, put the thinking level in `effort` and remove any `:level` suffix from the model string.
+Install all three skills together. `cross-agent-advice` requires `cross-agent-review` in a sibling skill directory because it reuses that script's harness and database code.
+
+Python 3, standard library only. Requires the harnesses selected by the routing config; `claude`, `codex`, `opencode`, and `omp` are currently supported. Reviewer models and reasoning efforts are pinned in `reviewers.toml`. Every reviewer requires an explicit `effort` field. For omp, put the thinking level in `effort` and remove any `:level` suffix from the model string.
 
 ## Configuring who reviews whom
 
@@ -58,6 +61,21 @@ Each `pattern` is a regular expression matched case-insensitively anywhere in th
 Each reviewer gets 480 seconds, overridable with `REVIEW_TIMEOUT=<seconds>`. A reviewer that overruns is killed, recorded as a `timeout`, and reported on stderr; the reviews that did finish are still delivered, and stderr says how many of the configured reviewers delivered.
 
 The calling agent's own command timeout has to be larger than `REVIEW_TIMEOUT`, or it kills the tool before the tool can report anything. The bundled skill asks for 600s, which is the ceiling for a Claude Code `Bash` call.
+
+## Asking for advice
+
+Use `cross-agent-advice` mid-implementation when you are weighing competing design or implementation options. It asks the same configured agents to inspect the context and recommend an option, then records each answer in the shared ledger. Advice does not grant user approval.
+
+```
+python3 skills/cross-agent-advice/scripts/cross-agent-advice ask gpt-6-astra my-app "Should retries live in the client or the job runner?" "agent-planning/03-retries.md step 2, src/client.py, and src/jobs.py"
+python3 skills/cross-agent-advice/scripts/cross-agent-advice decide <run_id> "Put retries in the job runner because it owns scheduling and backoff."
+```
+
+`ask` prints one answer-file path per advisor and a command for recording the decision. Each file includes the recommendation and reasoning, framed as advisor data with the run ID in its delimiters. Verify claims and weigh disagreement before choosing. `decide` saves the choice and reason; running it again replaces the earlier decision.
+
+Routing, effort flags, harness permissions, `REVIEW_TIMEOUT`, and `REVIEW_DB` are shared with reviews. `--dry-run` shows the advisor commands. Schema v5 adds `advice` and `advice_decisions` alongside `reviews`, preserving existing review rows; the summary continues to report only reviews.
+
+An answer missing the reply tags is delivered verbatim with status `unparsed`. A recommendation of `NA` means the advisor could not resolve the context. Failed and timed-out advisors are recorded too. If the database cannot record an ask, answers are still delivered with a warning, and the decision hint is omitted. `ask` exits `0` if any advisor answered, `2` for usage or configuration errors, `3` if all failed, and `4` when called inside an advisor or reviewer run. `decide` exits `2` for an unknown run ID or empty decision and `1` for a database or write failure.
 
 ## Summarizing review data
 
