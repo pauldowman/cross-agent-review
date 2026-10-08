@@ -426,7 +426,7 @@ class OutputFileTest(SpawnTestCase):
         )
 
         self.assertEqual(run.status, self.review.STATUS_OK)
-        self.assertEqual(run.grade, "C")
+        self.assertEqual(run.verdict, "C")
         self.assertEqual(run.text, REVIEW_BODY)
 
 

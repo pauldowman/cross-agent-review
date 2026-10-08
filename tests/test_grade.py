@@ -15,7 +15,7 @@ class ParseReviewTest(unittest.TestCase):
         self.review = review_module.load()
 
     def test_a_well_formed_reply_yields_grade_and_review(self):
-        grade, text, status = self.review.parse_review(reply("B"))
+        grade, text, status, _ = self.review.parse_review(reply("B"))
         self.assertEqual(grade, "B")
         self.assertEqual(text, BODY)
         self.assertEqual(status, self.review.STATUS_OK)
@@ -23,47 +23,47 @@ class ParseReviewTest(unittest.TestCase):
     def test_every_valid_grade_is_accepted(self):
         for letter in self.review.VALID_GRADES:
             with self.subTest(grade=letter):
-                grade, _, status = self.review.parse_review(reply(letter))
+                grade, _, status, _ = self.review.parse_review(reply(letter))
                 self.assertEqual(grade, letter)
                 self.assertEqual(status, self.review.STATUS_OK)
 
     def test_a_lowercase_grade_is_accepted(self):
-        grade, _, status = self.review.parse_review(reply("b"))
+        grade, _, status, _ = self.review.parse_review(reply("b"))
         self.assertEqual(grade, "B")
         self.assertEqual(status, self.review.STATUS_OK)
 
     def test_surrounding_prose_does_not_prevent_parsing(self):
         text = f"Here is my review.\n\n{reply('C')}\n\nHope that helps."
-        grade, body, status = self.review.parse_review(text)
+        grade, body, status, _ = self.review.parse_review(text)
         self.assertEqual(grade, "C")
         self.assertEqual(body, BODY)
         self.assertEqual(status, self.review.STATUS_OK)
 
     def test_a_reply_with_no_tags_is_unparsed_but_keeps_its_text(self):
-        grade, text, status = self.review.parse_review(LONG_ENOUGH_REVIEW)
+        grade, text, status, _ = self.review.parse_review(LONG_ENOUGH_REVIEW)
         self.assertIsNone(grade)
         self.assertEqual(text, LONG_ENOUGH_REVIEW)
         self.assertEqual(status, self.review.STATUS_UNPARSED)
 
     def test_a_review_with_no_grade_is_unparsed(self):
-        grade, _, status = self.review.parse_review(f"<review>{BODY}</review>")
+        grade, _, status, _ = self.review.parse_review(f"<review>{BODY}</review>")
         self.assertIsNone(grade)
         self.assertEqual(status, self.review.STATUS_UNPARSED)
 
     def test_a_grade_with_no_review_is_unparsed(self):
-        grade, _, status = self.review.parse_review("<grade>A</grade>")
+        grade, _, status, _ = self.review.parse_review("<grade>A</grade>")
         self.assertIsNone(grade)
         self.assertEqual(status, self.review.STATUS_UNPARSED)
 
     def test_an_empty_review_body_is_unparsed(self):
-        grade, _, status = self.review.parse_review("<grade>A</grade><review>  </review>")
+        grade, _, status, _ = self.review.parse_review("<grade>A</grade><review>  </review>")
         self.assertIsNone(grade)
         self.assertEqual(status, self.review.STATUS_UNPARSED)
 
     def test_an_out_of_range_grade_is_unparsed(self):
         for letter in ("E", "Z", "AB"):
             with self.subTest(grade=letter):
-                grade, _, status = self.review.parse_review(reply(letter))
+                grade, _, status, _ = self.review.parse_review(reply(letter))
                 self.assertIsNone(grade)
                 self.assertEqual(status, self.review.STATUS_UNPARSED)
 
@@ -73,25 +73,25 @@ class ParseReviewTest(unittest.TestCase):
             "```\n<grade>F</grade>\n<review>\nexample\n</review>\n```\n\n"
             "That is the format the tool expects."
         )
-        grade, body, status = self.review.parse_review(reply("A", quoted))
+        grade, body, status, _ = self.review.parse_review(reply("A", quoted))
         self.assertEqual(status, self.review.STATUS_OK)
         self.assertEqual(grade, "A")
         self.assertIn("That is the format the tool expects.", body)
 
     def test_the_outermost_review_wins(self):
         nested = "<review>\ninner mention\n</review>\nand more discussion"
-        _, body, status = self.review.parse_review(reply("B", nested))
+        _, body, status, _ = self.review.parse_review(reply("B", nested))
         self.assertEqual(status, self.review.STATUS_OK)
         self.assertIn("and more discussion", body)
 
     def test_the_last_grade_outside_the_review_wins(self):
         text = f"<grade>D</grade>\n{reply('A')}"
-        grade, _, status = self.review.parse_review(text)
+        grade, _, status, _ = self.review.parse_review(text)
         self.assertEqual(grade, "A")
         self.assertEqual(status, self.review.STATUS_OK)
 
     def test_the_not_found_sentinel_is_its_own_status(self):
-        grade, body, status = self.review.parse_review(
+        grade, body, status, _ = self.review.parse_review(
             reply("NA", "I looked for agent-planning/plan-17.md and it does not exist.")
         )
         self.assertEqual(grade, "NA")
@@ -107,21 +107,21 @@ class GradedRunTest(SpawnTestCase):
         self.echo(reply("C"))
         run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_OK)
-        self.assertEqual(run.grade, "C")
+        self.assertEqual(run.verdict, "C")
         self.assertEqual(run.text, BODY)
 
     def test_an_unparsable_reply_keeps_the_text_and_records_no_grade(self):
         self.echo(LONG_ENOUGH_REVIEW)
         run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_UNPARSED)
-        self.assertIsNone(run.grade)
+        self.assertIsNone(run.verdict)
         self.assertEqual(run.text, LONG_ENOUGH_REVIEW)
 
     def test_a_not_found_reply_records_na(self):
         self.echo(reply("NA", "I could not find the branch you named."))
         run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
         self.assertEqual(run.status, self.review.STATUS_NOT_FOUND)
-        self.assertEqual(run.grade, "NA")
+        self.assertEqual(run.verdict, "NA")
 
 
 class MainGradeTest(SpawnTestCase):

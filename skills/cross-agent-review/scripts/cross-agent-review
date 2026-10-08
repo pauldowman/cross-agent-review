@@ -209,7 +209,7 @@ DRAIN_TIMEOUT_SECONDS = 5
 
 ReviewerRun = namedtuple(
     "ReviewerRun",
-    "reviewer family status text notice stderr duration_s returncode cost_usd grade effort",
+    "reviewer family status text notice stderr duration_s returncode cost_usd verdict effort",
     defaults=(None, None, None, None),
 )
 
@@ -219,7 +219,7 @@ Invocation = namedtuple(
     "Invocation", "run_id ts project author goal description cwd branch git_sha"
 )
 
-SCHEMA = """
+REVIEWS_TABLE = """
 CREATE TABLE IF NOT EXISTS reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL,
@@ -241,6 +241,8 @@ CREATE TABLE IF NOT EXISTS reviews (
     effort TEXT
 )
 """
+
+SCHEMA = (REVIEWS_TABLE,)
 
 # Applied in order to bring an older database up to SCHEMA_VERSION. Rows
 # recorded before a column existed keep a NULL for it.
@@ -741,12 +743,12 @@ def strip_grades(text):
 
 
 def parse_review(text):
-    """Split a reviewer's reply into (grade, review text, status).
+    """Split a reviewer's reply into (verdict, review text, status, notice).
 
     Grades are only looked for outside the review body, so a review that
     quotes the tag contract while discussing it cannot change its own grade.
     """
-    unparsed = (None, strip_grades(text), STATUS_UNPARSED)
+    unparsed = (None, strip_grades(text), STATUS_UNPARSED, PARSE_NOTICES[STATUS_UNPARSED])
 
     body = REVIEW_PATTERN.search(text)
     if body is None:
@@ -760,10 +762,10 @@ def parse_review(text):
 
     grade = grades[-1].upper()
     if grade == NOT_FOUND_GRADE:
-        return grade, review, STATUS_NOT_FOUND
+        return grade, review, STATUS_NOT_FOUND, PARSE_NOTICES[STATUS_NOT_FOUND]
     if grade not in VALID_GRADES:
         return unparsed
-    return grade, review, STATUS_OK
+    return grade, review, STATUS_OK, ""
 
 
 def child_environment():
@@ -772,11 +774,11 @@ def child_environment():
     return environment
 
 
-def run_reviewer(reviewer, prompt, timeout=None):
+def run_reviewer(reviewer, prompt, timeout=None, parse=parse_review, label=TOOL_NAME):
     """Run one reviewer, cleaning up any output file it was given."""
     output_path = allocate_output_file(reviewer)
     try:
-        return run_harness(reviewer, prompt, timeout, output_path)
+        return run_harness(reviewer, prompt, timeout, output_path, parse=parse, label=label)
     finally:
         if output_path is not None:
             output_path.unlink(missing_ok=True)
@@ -799,7 +801,7 @@ def allocate_output_file(reviewer):
     return pathlib.Path(name)
 
 
-def run_harness(reviewer, prompt, timeout, output_path):
+def run_harness(reviewer, prompt, timeout, output_path, parse=parse_review, label=TOOL_NAME):
     """Run one reviewer to completion, killing its whole process group on timeout."""
     family = reviewer.harness
     argv = resolve_argv(reviewer, prompt, output_path)
@@ -807,7 +809,7 @@ def run_harness(reviewer, prompt, timeout, output_path):
     started = time.monotonic()
 
     def finished(
-        status, text, notice, stderr="", returncode=None, cost_usd=None, grade=None
+        status, text, notice, stderr="", returncode=None, cost_usd=None, verdict=None
     ):
         return ReviewerRun(
             reviewer=reviewer.model,
@@ -819,7 +821,7 @@ def run_harness(reviewer, prompt, timeout, output_path):
             duration_s=time.monotonic() - started,
             returncode=returncode,
             cost_usd=cost_usd,
-            grade=grade,
+            verdict=verdict,
             effort=reviewer.effort,
         )
 
@@ -848,7 +850,7 @@ def run_harness(reviewer, prompt, timeout, output_path):
             "",
             join_notices(
                 f"timed out after {timeout}s "
-                f"(this is the per-reviewer timeout; raise {TIMEOUT_ENV_VAR} "
+                f"(this is the per-agent timeout; raise {TIMEOUT_ENV_VAR} "
                 f"to allow longer)",
                 partial,
             ),
@@ -859,10 +861,9 @@ def run_harness(reviewer, prompt, timeout, output_path):
 
     extracted = EXTRACTORS[family](stdout, output_path)
     status, notice = classify(extracted, process.returncode)
-    grade, text = None, ""
+    verdict, text = None, ""
     if status == STATUS_OK:
-        grade, text, status = parse_review(extracted.text)
-        notice = PARSE_NOTICES.get(status, "")
+        verdict, text, status, notice = parse(extracted.text)
     return finished(
         status,
         text,
@@ -870,7 +871,7 @@ def run_harness(reviewer, prompt, timeout, output_path):
         stderr,
         process.returncode,
         extracted.cost_usd,
-        grade,
+        verdict,
     )
 
 
@@ -1049,7 +1050,7 @@ def review_all(reviewers, prompt, timeout, invocation):
     return delivered
 
 
-def collect(future, reviewer):
+def collect(future, reviewer, label=TOOL_NAME):
     """Take one reviewer's result, turning a crash into a failed run.
 
     A bug while running one reviewer must not cost the author the reviews
@@ -1061,8 +1062,8 @@ def collect(future, reviewer):
     try:
         return future.result()
     except Exception as error:
-        label = reviewer_label(reviewer)
-        print(f"{TOOL_NAME}: {label} could not be run: {error!r}", file=sys.stderr)
+        agent_label = reviewer_label(reviewer)
+        print(f"{label}: {agent_label} could not be run: {error!r}", file=sys.stderr)
         traceback.print_exc()
         return ReviewerRun(
             reviewer=reviewer.model,
@@ -1084,7 +1085,7 @@ def database_path():
     return pathlib.Path(data_home) / TOOL_NAME / "reviews.db"
 
 
-def open_database(path=None):
+def open_database(path=None, label=TOOL_NAME):
     """Open the ledger, or return None if it cannot be opened.
 
     Record keeping must never cost the author a review they already paid
@@ -1098,7 +1099,7 @@ def open_database(path=None):
         prepare_schema(connection)
         return connection
     except (sqlite3.Error, OSError) as error:
-        print(f"{TOOL_NAME}: not recording to {path}: {error}", file=sys.stderr)
+        print(f"{label}: not recording to {path}: {error}", file=sys.stderr)
         return None
 
 
@@ -1111,7 +1112,8 @@ def prepare_schema(connection):
     """
     version = connection.execute("PRAGMA user_version").fetchone()[0]
     if version == 0:
-        connection.execute(SCHEMA)
+        for statement in SCHEMA:
+            connection.execute(statement)
     elif version > SCHEMA_VERSION:
         raise sqlite3.DatabaseError(
             f"schema version {version} is newer than the {SCHEMA_VERSION} "
@@ -1187,7 +1189,7 @@ def insert_run(connection, invocation, run):
             invocation.cwd,
             invocation.branch,
             invocation.git_sha,
-            run.grade,
+            run.verdict,
             run.text or None,
             run.duration_s,
             run.status,
@@ -1198,7 +1200,7 @@ def insert_run(connection, invocation, run):
     connection.commit()
 
 
-def make_review_directory(run_id):
+def make_review_directory(run_id, prefix=TOOL_NAME):
     """A fresh directory for this invocation's review files, or None.
 
     It is deliberately left behind: the author reads the files after this
@@ -1206,16 +1208,16 @@ def make_review_directory(run_id):
     Only an empty one is removed, when every reviewer failed.
     """
     try:
-        return pathlib.Path(tempfile.mkdtemp(prefix=f"{TOOL_NAME}-{run_id}-"))
+        return pathlib.Path(tempfile.mkdtemp(prefix=f"{prefix}-{run_id}-"))
     except OSError as error:
         print(
-            f"{TOOL_NAME}: printing reviews instead of saving them: {error}",
+            f"{prefix}: printing reviews instead of saving them: {error}",
             file=sys.stderr,
         )
         return None
 
 
-def save_review(directory, run, framed):
+def save_review(directory, run, framed, label=TOOL_NAME):
     """Write one framed review to its own file, returning the path or None."""
     if directory is None:
         return None
@@ -1226,7 +1228,7 @@ def save_review(directory, run, framed):
             file.write(framed + "\n")
     except OSError as error:
         print(
-            f"{TOOL_NAME}: printing {run_label(run)} instead of saving it: {error}",
+            f"{label}: printing {run_label(run)} instead of saving it: {error}",
             file=sys.stderr,
         )
         return None
@@ -1255,7 +1257,7 @@ def deliver(run, nonce, directory):
     return True
 
 
-def report_failure(run):
+def report_failure(run, label=TOOL_NAME):
     """Explain a failed reviewer on stderr.
 
     Raw harness stderr is only shown here. On the deliverable path it would
@@ -1263,9 +1265,9 @@ def report_failure(run):
     author's context; as diagnostics for a failure it is what you want.
     """
     sys.stdout.flush()
-    print(f"{TOOL_NAME}: {run_label(run)} failed ({run.status})", file=sys.stderr)
+    print(f"{label}: {run_label(run)} failed ({run.status})", file=sys.stderr)
     for line in join_notices(run.notice, run.stderr).splitlines():
-        print(f"{TOOL_NAME}: {line}", file=sys.stderr)
+        print(f"{label}: {line}", file=sys.stderr)
 
 
 if __name__ == "__main__":
