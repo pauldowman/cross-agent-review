@@ -19,7 +19,7 @@ npx skills add pauldowman/cross-agent-review --skill cross-agent-review-summariz
 
 The [`skills` CLI](https://www.npmjs.com/package/skills) installs the complete skill directory for each selected agent, including its bundled script. Each skill resolves its script relative to its own `SKILL.md`, so no separate executable or `PATH` setup is needed.
 
-Single-file Python 3, standard library only. Requires the harnesses selected by the routing config; `claude`, `codex`, `opencode`, and `omp` are currently supported. Reviewer models are pinned in `reviewers.toml`, and codex's reasoning effort is pinned in the bundled script, so a reviewer never silently inherits either value from a harness's user settings. omp reads its thinking level from the model string, so pin it there as `model:level` — `deepseek/deepseek-v4-flash:high` — or omp picks the level from its own settings.
+Single-file Python 3, standard library only. Requires the harnesses selected by the routing config; `claude`, `codex`, `opencode`, and `omp` are currently supported. Reviewer models and reasoning efforts are pinned in `reviewers.toml`. Every reviewer requires an explicit `effort` field. For omp, put the thinking level in `effort` and remove any `:level` suffix from the model string.
 
 ## Configuring who reviews whom
 
@@ -29,27 +29,27 @@ Routing lives in `$XDG_CONFIG_HOME/cross-agent-review/reviewers.toml` (default `
 [[rule]]
 pattern = "^claude"
 reviewers = [
-    { harness = "codex", model = "gpt-5.6-sol" },
-    { harness = "opencode", model = "opencode/x-preview-f-free" },
+    { harness = "codex", model = "gpt-5.6-sol", effort = "medium" },
+    { harness = "opencode", model = "opencode/x-preview-f-free", effort = "medium" },
 ]
 
 [[rule]]
 pattern = "^gpt|^codex"
 reviewers = [
-    { harness = "claude", model = "claude-opus-5" },
-    { harness = "opencode", model = "opencode/x-preview-f-free" },
+    { harness = "claude", model = "claude-opus-5", effort = "medium" },
+    { harness = "opencode", model = "opencode/x-preview-f-free", effort = "medium" },
 ]
 
 [[rule]]
 pattern = "."
 reviewers = [
-    { harness = "codex", model = "gpt-5.6-sol" },
-    { harness = "claude", model = "claude-opus-5" },
-    { harness = "omp", model = "deepseek/deepseek-v4-flash:high" },
+    { harness = "codex", model = "gpt-5.6-sol", effort = "medium" },
+    { harness = "claude", model = "claude-opus-5", effort = "medium" },
+    { harness = "omp", model = "deepseek/deepseek-v4-flash", effort = "medium" },
 ]
 ```
 
-Each `pattern` is a regular expression matched case-insensitively anywhere in the author's model name. **The first matching rule wins**, so order specific rules before general ones and end with a catch-all — an author matching no rule is an error. Each `reviewers` entry pairs a supported `harness` with the exact `model` string passed to it. Model names are opaque to the script: adding or replacing a model is a config-only change.
+Each `pattern` is a regular expression matched case-insensitively anywhere in the author's model name. **The first matching rule wins**, so order specific rules before general ones and end with a catch-all — an author matching no rule is an error. Each `reviewers` entry requires a supported `harness`, the exact `model` string, and a non-empty `effort` string. Existing configs must add `effort` to every reviewer. The script passes effort as `--effort <level>` to claude, `-c model_reasoning_effort=<level>` to codex, `--variant <level>` to opencode, and `--thinking=<level>` to omp. Values are harness-specific and are passed through without validation; choose one supported by your harness and model. For opencode, replace the example `medium` with a variant defined by the selected model; an absent variant may leave its default effort in effect. Model names are opaque to the script: adding or replacing a model is a config-only change.
 
 `HARNESSES` in `skills/cross-agent-review/scripts/cross-agent-review` defines how supported harness families are invoked. Adding a new harness family still requires code for its command and output format; adding a model does not.
 

@@ -30,38 +30,53 @@ class ConfiguredHarnessTest(unittest.TestCase):
         model = "model-selected-by-config"
         for family, builder in self.review.HARNESSES.items():
             with self.subTest(harness=family):
-                harness = builder(self.review.Reviewer(family, model))
+                harness = builder(self.review.Reviewer(family, model, "medium"))
                 pinned = [f for f in ("--model", "-m") if f in harness.argv]
                 self.assertTrue(pinned, f"{family} does not pin a model")
                 selected = harness.argv[harness.argv.index(pinned[0]) + 1]
                 self.assertEqual(selected, model)
 
+    def test_every_harness_passes_the_configured_effort_explicitly(self):
+        for effort in ("low", "high", "future-level"):
+            for family, tokens in (
+                ("claude", ("--effort", effort)),
+                ("codex", ("-c", f"model_reasoning_effort={effort}")),
+                ("opencode", ("--variant", effort)),
+                ("omp", (f"--thinking={effort}",)),
+            ):
+                with self.subTest(harness=family, effort=effort):
+                    reviewer = self.review.Reviewer(family, "model-under-test", effort)
+                    argv = self.review.harness_for(reviewer).argv
+                    self.assertEqual(argv.count(tokens[0]), 1)
+                    start = argv.index(tokens[0])
+                    self.assertEqual(argv[start:start + len(tokens)], tokens)
+
     def test_harness_review_modes_are_explicit_when_supported(self):
         for family, (flag, value) in PERMISSION_FLAGS.items():
             with self.subTest(harness=family):
-                harness = self.review.HARNESSES[family](self.review.Reviewer(family, "model-under-test"))
+                harness = self.review.HARNESSES[family](self.review.Reviewer(family, "model-under-test", "medium"))
                 self.assertIn(flag, harness.argv)
                 self.assertEqual(harness.argv[harness.argv.index(flag) + 1], value)
 
     def test_codex_inherits_the_users_configured_permissions(self):
-        argv = self.review.codex_harness(self.review.Reviewer("codex", "model-under-test")).argv
+        argv = self.review.codex_harness(self.review.Reviewer("codex", "model-under-test", "medium")).argv
 
         self.assertNotIn("-s", argv)
         self.assertNotIn("--sandbox", argv)
 
     def test_omp_inherits_the_users_configured_permissions(self):
-        argv = self.review.omp_harness(self.review.Reviewer("omp", "model-under-test")).argv
+        argv = self.review.omp_harness(self.review.Reviewer("omp", "model-under-test", "medium")).argv
 
         self.assertNotIn("--approval-mode", argv)
         self.assertNotIn("--auto-approve", argv)
 
     def test_omp_keeps_reviewer_runs_out_of_the_users_session_history(self):
-        self.assertIn("--no-session", self.review.omp_harness(self.review.Reviewer("omp", "model-under-test")).argv)
+        self.assertIn("--no-session", self.review.omp_harness(self.review.Reviewer("omp", "model-under-test", "medium")).argv)
 
     def test_no_harness_bypasses_configured_permissions(self):
         for family, builder in self.review.HARNESSES.items():
             with self.subTest(harness=family):
-                argv = builder(self.review.Reviewer(family, "model-under-test")).argv
+                argv = builder(self.review.Reviewer(family, "model-under-test", "medium")).argv
                 dangerous = [
                     argument
                     for argument in argv
@@ -101,14 +116,14 @@ class DryRunOfConfiguredReviewersTest(unittest.TestCase):
         _, out, _ = run_main(
             self.review, "claude-opus-5", PROJECT, GOAL, "the branch", "--dry-run"
         )
-        self.assertIn("opencode/x-preview-f-free via opencode", out)
+        self.assertIn("opencode/x-preview-f-free (medium) via opencode", out)
         self.assertIn("--format json", out)
 
     def test_the_omp_command_requests_json_events(self):
         _, out, _ = run_main(
             self.review, "gpt-5.6-sol", PROJECT, GOAL, "the branch", "--dry-run"
         )
-        self.assertIn("vendor/x-preview-m:high via omp", out)
+        self.assertIn("vendor/x-preview-m (medium) via omp", out)
         self.assertIn("--mode json", out)
 
     def test_a_dry_run_creates_no_output_files(self):
@@ -352,11 +367,11 @@ class ExtractOmpTest(unittest.TestCase):
 
 class OutputFileTest(SpawnTestCase):
     def test_a_harness_without_an_output_placeholder_gets_no_file(self):
-        reviewer = self.review.Reviewer("claude", "model-under-test")
+        reviewer = self.review.Reviewer("claude", "model-under-test", "medium")
         self.assertIsNone(self.review.allocate_output_file(reviewer))
 
     def test_a_harness_with_an_output_placeholder_gets_its_own_file(self):
-        reviewer = self.review.Reviewer("codex", "model-under-test")
+        reviewer = self.review.Reviewer("codex", "model-under-test", "medium")
         first = self.review.allocate_output_file(reviewer)
         second = self.review.allocate_output_file(reviewer)
         self.addCleanup(first.unlink, True)

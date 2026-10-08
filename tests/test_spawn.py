@@ -115,7 +115,7 @@ class SpawnTestCase(unittest.TestCase):
             )
 
         self.review.HARNESSES[family] = build
-        return self.review.Reviewer(family, model)
+        return self.review.Reviewer(family, model, "medium")
 
     def route_to(self, *reviewers):
         """Send every author to these reviewers, bypassing the config file."""
@@ -164,7 +164,7 @@ class ArgvTest(SpawnTestCase):
             self.review.resolve_argv(self.fake_reviewer, "TEXT")
 
     def test_claude_argv_puts_the_prompt_before_every_long_flag(self):
-        reviewer = self.review.Reviewer("claude", "any-versioned-model")
+        reviewer = self.review.Reviewer("claude", "any-versioned-model", "medium")
         argv = self.review.resolve_argv(reviewer, "PROMPT TEXT")
         prompt_index = argv.index("PROMPT TEXT")
         flag_indexes = [i for i, part in enumerate(argv) if part.startswith("--")]
@@ -181,7 +181,7 @@ class ConfiguredTableTest(unittest.TestCase):
     def test_every_harness_template_resolves(self):
         for family, builder in self.review.HARNESSES.items():
             with self.subTest(harness=family):
-                reviewer = self.review.Reviewer(family, "model-under-test")
+                reviewer = self.review.Reviewer(family, "model-under-test", "medium")
                 harness = builder(reviewer)
                 needs_file = self.review.OUTPUT_PLACEHOLDER in harness.argv
                 output = pathlib.Path("/tmp/review-output") if needs_file else None
@@ -350,6 +350,12 @@ class RunReviewerTest(SpawnTestCase):
         except ProcessLookupError:
             pass
 
+    def test_the_run_keeps_the_configured_effort(self):
+        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=GRADED_REVIEW)
+        reviewer = self.fake_reviewer._replace(effort="high")
+        run = self.review.run_reviewer(reviewer, "prompt", timeout=30)
+        self.assertEqual(run.effort, "high")
+
     def test_child_environment_marks_a_review_as_active(self):
         self.set_env(FAKE_HARNESS_MODE="env")
         run = self.review.run_reviewer(self.fake_reviewer, "prompt", timeout=30)
@@ -368,7 +374,7 @@ class MainOutputTest(SpawnTestCase):
 
     def test_a_model_name_with_path_characters_makes_a_safe_file_name(self):
         self.install_harness("vendor/model:high", "plain", self.harness_argv["plain", "fake"])
-        self.route_to(self.review.Reviewer("plain", "vendor/model:high"))
+        self.route_to(self.review.Reviewer("plain", "vendor/model:high", "medium"))
         self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=GRADED_REVIEW)
         _, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
         [path] = review_paths(out)

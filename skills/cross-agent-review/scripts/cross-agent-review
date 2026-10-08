@@ -26,7 +26,7 @@ PROMPT_PLACEHOLDER = "<prompt>"
 OUTPUT_PLACEHOLDER = "<output-file>"
 
 Harness = namedtuple("Harness", "family argv")
-Reviewer = namedtuple("Reviewer", "harness model")
+Reviewer = namedtuple("Reviewer", "harness model effort")
 
 
 def claude_harness(reviewer):
@@ -38,6 +38,8 @@ def claude_harness(reviewer):
             PROMPT_PLACEHOLDER,
             "--model",
             reviewer.model,
+            "--effort",
+            reviewer.effort,
             "--permission-mode",
             "plan",
             "--output-format",
@@ -64,7 +66,7 @@ def codex_harness(reviewer):
             "-m",
             reviewer.model,
             "-c",
-            f"model_reasoning_effort={CODEX_REASONING_EFFORT}",
+            f"model_reasoning_effort={reviewer.effort}",
             "-o",
             OUTPUT_PLACEHOLDER,
             "--skip-git-repo-check",
@@ -85,6 +87,8 @@ def opencode_harness(reviewer):
             "json",
             "--model",
             reviewer.model,
+            "--variant",
+            reviewer.effort,
             PROMPT_PLACEHOLDER,
         ),
     )
@@ -94,9 +98,8 @@ def omp_harness(reviewer):
     """omp writes one JSON event per line in `--mode json`.
 
     Approval behavior comes from the user's omp configuration, which decides
-    what a reviewer may touch; this tool must not override it. A thinking
-    level rides on the model string as `model:level`, so it stays a config
-    choice like the model name itself.
+    what a reviewer may touch; this tool must not override it. The thinking
+    level is passed explicitly from the reviewer configuration.
 
     `--no-session` keeps reviewer runs out of the user's own omp history,
     where they would otherwise crowd the resume picker. Nothing is lost: the
@@ -112,14 +115,11 @@ def omp_harness(reviewer):
             "--no-session",
             "--model",
             reviewer.model,
+            f"--thinking={reviewer.effort}",
             PROMPT_PLACEHOLDER,
         ),
     )
 
-
-# Pinned because the user's config default can change latency and cost
-# invisibly and risks timing out.
-CODEX_REASONING_EFFORT = "medium"
 
 # Harnesses know how to invoke a model, but model selection belongs entirely
 # to the reviewer configuration.
@@ -135,16 +135,17 @@ EXAMPLE_CONFIG = """# Which reviewers review which author, for cross-agent-revie
 # Each rule's `pattern` is a regular expression, matched case-insensitively
 # against the author's model name. The first matching rule wins, so put the
 # specific rules first and finish with a catch-all. Each reviewer specifies
-# the harness to invoke and the model name to pass to it. Replace the example
-# model values below with models available through your harnesses.
+# the harness to invoke, model name, and effort. Effort values are
+# harness-specific. For opencode, choose an effort from the selected model's
+# variants. Replace the example models with ones available in your harnesses.
 
 [[rule]]
 pattern = "."
 reviewers = [
-    { harness = "codex", model = "YOUR-CODEX-MODEL" },
-    { harness = "claude", model = "YOUR-CLAUDE-MODEL" },
-    { harness = "opencode", model = "YOUR-OPENCODE-MODEL" },
-    { harness = "omp", model = "YOUR-OMP-MODEL" },
+    { harness = "codex", model = "YOUR-CODEX-MODEL", effort = "medium" },
+    { harness = "claude", model = "YOUR-CLAUDE-MODEL", effort = "medium" },
+    { harness = "opencode", model = "YOUR-OPENCODE-MODEL", effort = "medium" },
+    { harness = "omp", model = "YOUR-OMP-MODEL", effort = "medium" },
 ]
 """
 
@@ -208,8 +209,8 @@ DRAIN_TIMEOUT_SECONDS = 5
 
 ReviewerRun = namedtuple(
     "ReviewerRun",
-    "reviewer family status text notice stderr duration_s returncode cost_usd grade",
-    defaults=(None, None, None),
+    "reviewer family status text notice stderr duration_s returncode cost_usd grade effort",
+    defaults=(None, None, None, None),
 )
 
 Extracted = namedtuple("Extracted", "text cost_usd error")
@@ -314,10 +315,10 @@ def parse_reviewer(value, position, where):
     location = f"reviewer {position} in {where}"
     if not isinstance(value, dict):
         raise ConfigurationError(
-            f"{location} must be an inline table with `harness` and `model` strings"
+            f"{location} must be an inline table with `harness`, `model`, and `effort` strings"
         )
 
-    unexpected = sorted(set(value) - {"harness", "model"})
+    unexpected = sorted(set(value) - {"harness", "model", "effort"})
     if unexpected:
         raise ConfigurationError(
             f"{location} has unknown fields {', '.join(map(repr, unexpected))}"
@@ -333,7 +334,15 @@ def parse_reviewer(value, position, where):
         )
     if not isinstance(model, str) or not model.strip():
         raise ConfigurationError(f"{location} needs a non-empty `model` string")
-    return Reviewer(harness, model)
+    if "effort" not in value:
+        raise ConfigurationError(
+            f"{location}: every reviewer now needs an `effort` field. "
+            'For example: { harness = "codex", model = "YOUR-MODEL", effort = "medium" }'
+        )
+    effort = value["effort"]
+    if not isinstance(effort, str) or not effort.strip():
+        raise ConfigurationError(f"{location} needs a non-empty `effort` string")
+    return Reviewer(harness, model, effort)
 
 
 def reviewers_for(author, rules):
@@ -433,11 +442,12 @@ def harness_for(reviewer):
 
 
 def reviewer_label(reviewer):
-    return f"{reviewer.model} via {reviewer.harness}"
+    return f"{reviewer.model} ({reviewer.effort}) via {reviewer.harness}"
 
 
 def run_label(run):
-    return f"{run.reviewer} via {run.family}"
+    effort = f" ({run.effort})" if run.effort else ""
+    return f"{run.reviewer}{effort} via {run.family}"
 
 
 def resolve_argv(reviewer, prompt, output_path=None):
@@ -808,6 +818,7 @@ def run_harness(reviewer, prompt, timeout, output_path):
             returncode=returncode,
             cost_usd=cost_usd,
             grade=grade,
+            effort=reviewer.effort,
         )
 
     try:
@@ -1059,6 +1070,7 @@ def collect(future, reviewer):
             notice=f"the review tool failed to run this reviewer: {error!r}",
             stderr="",
             duration_s=0.0,
+            effort=reviewer.effort,
         )
 
 

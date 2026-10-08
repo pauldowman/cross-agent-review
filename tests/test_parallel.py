@@ -7,7 +7,7 @@ import time
 import unittest
 
 from test_grade import reply
-from test_spawn import FIXTURE, GOAL, PROJECT, SpawnTestCase, read_reviews, run_main
+from test_spawn import FIXTURE, GOAL, PROJECT, SpawnTestCase, read_reviews, review_paths, run_main
 
 FIRST = "The first reviewer found an off-by-one in the retry loop."
 SECOND = "The second reviewer found a missing index on the lookup table."
@@ -56,7 +56,7 @@ class ParallelTestCase(SpawnTestCase):
         self.set_env(FAKE_HARNESS_MODE="noisy")
 
     def use_reviewers(self, *names):
-        self.route_to(*(self.review.Reviewer("plain", name) for name in names))
+        self.route_to(*(self.review.Reviewer("plain", name, "medium") for name in names))
 
 
 class TwoReviewersTest(ParallelTestCase):
@@ -112,6 +112,56 @@ class TwoReviewersTest(ParallelTestCase):
         )
 
 
+class ReviewerEffortTest(ParallelTestCase):
+    def use_same_model_at_two_efforts(self):
+        self.route_to(
+            self.review.Reviewer("plain", "alpha", "low"),
+            self.review.Reviewer("plain", "alpha", "high"),
+        )
+
+    def test_successful_reviews_and_saved_headers_identify_each_effort(self):
+        self.static_harness("alpha", reply("A", FIRST))
+        self.use_same_model_at_two_efforts()
+
+        code, out, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
+
+        self.assertEqual(code, self.review.EXIT_OK)
+        paths = review_paths(out)
+        self.assertEqual(len(set(paths)), 2)
+        self.assertTrue(all(path.name.startswith("plain-alpha-") for path in paths))
+        for effort in ("low", "high"):
+            self.assertIn(f"review from alpha ({effort}) via plain", out)
+            self.assertIn(f"review from alpha ({effort}) via plain", read_reviews(out))
+
+    def test_failure_lines_identify_each_effort(self):
+        self.broken_harness("alpha")
+        self.use_same_model_at_two_efforts()
+
+        code, _, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
+
+        self.assertEqual(code, self.review.EXIT_ALL_FAILED)
+        for effort in ("low", "high"):
+            self.assertIn(f"alpha ({effort}) via plain failed", err)
+
+    def test_dry_run_labels_identify_each_effort(self):
+        self.static_harness("alpha", reply("A", FIRST))
+        self.use_same_model_at_two_efforts()
+
+        code, out, _ = run_main(
+            self.review, "gpt-5.6", PROJECT, GOAL, "the branch", "--dry-run"
+        )
+
+        self.assertEqual(code, self.review.EXIT_OK)
+        for effort in ("low", "high"):
+            self.assertIn(f"alpha ({effort}) via plain:", out)
+
+    def test_run_without_effort_keeps_its_legacy_label(self):
+        run = self.review.ReviewerRun(
+            "alpha", "plain", self.review.STATUS_OK, FIRST, "", "", 0.0
+        )
+        self.assertEqual(self.review.run_label(run), "alpha via plain")
+
+
 class PartialFailureTest(ParallelTestCase):
     def test_one_failure_does_not_withhold_the_other_review(self):
         self.static_harness("alpha", reply("A", FIRST))
@@ -122,7 +172,7 @@ class PartialFailureTest(ParallelTestCase):
 
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn(FIRST, read_reviews(out))
-        self.assertIn("beta via plain failed", err)
+        self.assertIn("beta (medium) via plain failed", err)
 
     def test_a_failed_reviewer_is_still_recorded(self):
         self.static_harness("alpha", reply("A", FIRST))
@@ -177,7 +227,7 @@ class PartialFailureTest(ParallelTestCase):
 
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn(FIRST, read_reviews(out))
-        self.assertIn("beta via plain failed", err)
+        self.assertIn("beta (medium) via plain failed", err)
         self.assertNotIn("transcript line 0\n", err)
         self.assertLess(
             len(err.splitlines()),
@@ -196,7 +246,7 @@ class PartialFailureTest(ParallelTestCase):
 
         self.assertEqual(code, self.review.EXIT_OK)
         self.assertIn(FIRST, read_reviews(out))
-        self.assertIn("beta via plain could not be run", err)
+        self.assertIn("beta (medium) via plain could not be run", err)
 
 
 class InterruptTest(ParallelTestCase):

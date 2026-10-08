@@ -7,8 +7,8 @@ from unittest import mock
 import review_module
 from test_spawn import GOAL, PROJECT, run_main
 
-CLAUDE_OPUS = '{ harness = "claude", model = "claude-opus-5" }'
-CLAUDE_SONNET = '{ harness = "claude", model = "claude-sonnet-5" }'
+CLAUDE_OPUS = '{ harness = "claude", model = "claude-opus-5", effort = "medium" }'
+CLAUDE_SONNET = '{ harness = "claude", model = "claude-sonnet-5", effort = "medium" }'
 
 
 class ConfigPathTest(unittest.TestCase):
@@ -114,7 +114,7 @@ class MalformedConfigTest(LoadRulesTestCase):
     def test_an_unknown_harness_is_rejected_and_the_known_ones_listed(self):
         message = self.error_from(
             '[[rule]]\npattern = "."\n'
-            'reviewers = [{ harness = "future-cli", model = "gpt-9" }]\n'
+            'reviewers = [{ harness = "future-cli", model = "gpt-9", effort = "medium" }]\n'
         )
         self.assertIn("future-cli", message)
         self.assertIn("claude", message, "the message must list valid harnesses")
@@ -122,7 +122,7 @@ class MalformedConfigTest(LoadRulesTestCase):
 
     def test_a_reviewer_needs_a_harness_and_model(self):
         for reviewer, missing in (
-            ('{ model = "some-model" }', "`harness`"),
+            ('{ model = "some-model", effort = "medium" }', "`harness`"),
             ('{ harness = "claude" }', "`model`"),
         ):
             with self.subTest(reviewer=reviewer):
@@ -134,9 +134,38 @@ class MalformedConfigTest(LoadRulesTestCase):
     def test_unknown_reviewer_fields_are_rejected(self):
         message = self.error_from(
             '[[rule]]\npattern = "."\nreviewers = '
-            '[{ harness = "claude", model = "some-model", modle = "typo" }]\n'
+            '[{ harness = "claude", model = "some-model", effort = "medium", modle = "typo" }]\n'
         )
         self.assertIn("modle", message)
+
+    def test_missing_effort_explains_how_to_upgrade_the_reviewer(self):
+        message = self.error_from(
+            '[[rule]]\npattern = "."\n'
+            'reviewers = [{ harness = "claude", model = "some-model" }]\n'
+        )
+        self.assertIn(f"reviewer 1 in rule 1 in {self.path}", message)
+        self.assertIn("every reviewer now needs an `effort` field", message)
+        self.assertIn('{ harness = "codex", model = "YOUR-MODEL", effort = "medium" }', message)
+
+    def test_effort_must_be_a_non_empty_string(self):
+        for effort in ('""', '"   "', '7', 'true', '[]'):
+            with self.subTest(effort=effort):
+                message = self.error_from(
+                    '[[rule]]\npattern = "."\nreviewers = '
+                    f'[{{ harness = "claude", model = "some-model", effort = {effort} }}]\n'
+                )
+                self.assertIn("non-empty `effort` string", message)
+                self.assertIn(f"reviewer 1 in rule 1 in {self.path}", message)
+
+    def test_effort_values_are_passed_through_without_validation(self):
+        rules = self.review.load_rules(self.write(
+            '[[rule]]\npattern = "."\nreviewers = '
+            '[{ harness = "codex", model = "some-model", effort = "future-level" }]\n'
+        ))
+        self.assertEqual(
+            self.review.reviewers_for("author", rules),
+            (self.review.Reviewer("codex", "some-model", "future-level"),),
+        )
 
     def test_an_invalid_regex_is_rejected(self):
         message = self.error_from(
@@ -162,7 +191,7 @@ class MatchingTest(LoadRulesTestCase):
         )
         self.assertEqual(
             self.review.reviewers_for("anthropic/claude-opus-5", rules),
-            (self.review.Reviewer("claude", "claude-opus-5"),),
+            (self.review.Reviewer("claude", "claude-opus-5", "medium"),),
         )
 
     def test_matching_ignores_case(self):
@@ -171,7 +200,7 @@ class MatchingTest(LoadRulesTestCase):
         )
         self.assertEqual(
             self.review.reviewers_for("gpt-5.6-sol", rules),
-            (self.review.Reviewer("claude", "claude-opus-5"),),
+            (self.review.Reviewer("claude", "claude-opus-5", "medium"),),
         )
 
     def test_the_first_matching_rule_wins(self):
@@ -181,11 +210,11 @@ class MatchingTest(LoadRulesTestCase):
         )
         self.assertEqual(
             self.review.reviewers_for("claude-opus-5", rules),
-            (self.review.Reviewer("claude", "claude-sonnet-5"),),
+            (self.review.Reviewer("claude", "claude-sonnet-5", "medium"),),
         )
         self.assertEqual(
             self.review.reviewers_for("something-else", rules),
-            (self.review.Reviewer("claude", "claude-opus-5"),),
+            (self.review.Reviewer("claude", "claude-opus-5", "medium"),),
         )
 
     def test_an_author_matching_no_rule_is_an_error_naming_the_model(self):
@@ -216,15 +245,15 @@ class MatchingTest(LoadRulesTestCase):
         self.assertEqual(
             self.review.reviewers_for("anything", rules),
             (
-                self.review.Reviewer("claude", "claude-opus-5"),
-                self.review.Reviewer("claude", "claude-sonnet-5"),
+                self.review.Reviewer("claude", "claude-opus-5", "medium"),
+                self.review.Reviewer("claude", "claude-sonnet-5", "medium"),
             ),
         )
 
     def test_model_names_are_opaque_to_the_script(self):
         rules = self.rules(
             '[[rule]]\npattern = "."\nreviewers = '
-            '[{ harness = "codex", model = "vendor/model-not-yet-released@preview" }]\n'
+            '[{ harness = "codex", model = "vendor/model-not-yet-released@preview", effort = "medium" }]\n'
         )
         (reviewer,) = self.review.reviewers_for("anything", rules)
         self.assertEqual(reviewer.model, "vendor/model-not-yet-released@preview")
