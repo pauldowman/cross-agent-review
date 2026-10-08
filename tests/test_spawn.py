@@ -109,9 +109,9 @@ class SpawnTestCase(unittest.TestCase):
     def install_harness(self, model, family, argv):
         self.harness_argv[family, model] = argv
 
-        def build(selected_model):
+        def build(reviewer):
             return self.review.Harness(
-                family, self.harness_argv[family, selected_model]
+                family, self.harness_argv[family, reviewer.model]
             )
 
         self.review.HARNESSES[family] = build
@@ -182,7 +182,7 @@ class ConfiguredTableTest(unittest.TestCase):
         for family, builder in self.review.HARNESSES.items():
             with self.subTest(harness=family):
                 reviewer = self.review.Reviewer(family, "model-under-test")
-                harness = builder(reviewer.model)
+                harness = builder(reviewer)
                 needs_file = self.review.OUTPUT_PLACEHOLDER in harness.argv
                 output = pathlib.Path("/tmp/review-output") if needs_file else None
                 argv = self.review.resolve_argv(reviewer, "PROMPT", output)

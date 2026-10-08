@@ -29,7 +29,7 @@ Harness = namedtuple("Harness", "family argv")
 Reviewer = namedtuple("Reviewer", "harness model")
 
 
-def claude_harness(model):
+def claude_harness(reviewer):
     return Harness(
         "claude",
         (
@@ -37,7 +37,7 @@ def claude_harness(model):
             "-p",
             PROMPT_PLACEHOLDER,
             "--model",
-            model,
+            reviewer.model,
             "--permission-mode",
             "plan",
             "--output-format",
@@ -46,7 +46,7 @@ def claude_harness(model):
     )
 
 
-def codex_harness(model):
+def codex_harness(reviewer):
     """codex writes its final message to the file named by -o.
 
     Its stdout carries a banner and a token-usage footer, so the file is the
@@ -62,7 +62,7 @@ def codex_harness(model):
             "codex",
             "exec",
             "-m",
-            model,
+            reviewer.model,
             "-c",
             f"model_reasoning_effort={CODEX_REASONING_EFFORT}",
             "-o",
@@ -73,7 +73,7 @@ def codex_harness(model):
     )
 
 
-def opencode_harness(model):
+def opencode_harness(reviewer):
     return Harness(
         "opencode",
         (
@@ -84,13 +84,13 @@ def opencode_harness(model):
             "--format",
             "json",
             "--model",
-            model,
+            reviewer.model,
             PROMPT_PLACEHOLDER,
         ),
     )
 
 
-def omp_harness(model):
+def omp_harness(reviewer):
     """omp writes one JSON event per line in `--mode json`.
 
     Approval behavior comes from the user's omp configuration, which decides
@@ -111,7 +111,7 @@ def omp_harness(model):
             "json",
             "--no-session",
             "--model",
-            model,
+            reviewer.model,
             PROMPT_PLACEHOLDER,
         ),
     )
@@ -424,7 +424,7 @@ and use the review to say what you looked for and where."""
 
 
 def harness_for(reviewer):
-    harness = HARNESSES[reviewer.harness](reviewer.model)
+    harness = HARNESSES[reviewer.harness](reviewer)
     if harness.family != reviewer.harness:
         raise ValueError(
             f"harness builder {reviewer.harness!r} returned family {harness.family!r}"

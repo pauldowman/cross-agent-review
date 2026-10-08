@@ -30,7 +30,7 @@ class ConfiguredHarnessTest(unittest.TestCase):
         model = "model-selected-by-config"
         for family, builder in self.review.HARNESSES.items():
             with self.subTest(harness=family):
-                harness = builder(model)
+                harness = builder(self.review.Reviewer(family, model))
                 pinned = [f for f in ("--model", "-m") if f in harness.argv]
                 self.assertTrue(pinned, f"{family} does not pin a model")
                 selected = harness.argv[harness.argv.index(pinned[0]) + 1]
@@ -39,29 +39,29 @@ class ConfiguredHarnessTest(unittest.TestCase):
     def test_harness_review_modes_are_explicit_when_supported(self):
         for family, (flag, value) in PERMISSION_FLAGS.items():
             with self.subTest(harness=family):
-                harness = self.review.HARNESSES[family]("model-under-test")
+                harness = self.review.HARNESSES[family](self.review.Reviewer(family, "model-under-test"))
                 self.assertIn(flag, harness.argv)
                 self.assertEqual(harness.argv[harness.argv.index(flag) + 1], value)
 
     def test_codex_inherits_the_users_configured_permissions(self):
-        argv = self.review.codex_harness("model-under-test").argv
+        argv = self.review.codex_harness(self.review.Reviewer("codex", "model-under-test")).argv
 
         self.assertNotIn("-s", argv)
         self.assertNotIn("--sandbox", argv)
 
     def test_omp_inherits_the_users_configured_permissions(self):
-        argv = self.review.omp_harness("model-under-test").argv
+        argv = self.review.omp_harness(self.review.Reviewer("omp", "model-under-test")).argv
 
         self.assertNotIn("--approval-mode", argv)
         self.assertNotIn("--auto-approve", argv)
 
     def test_omp_keeps_reviewer_runs_out_of_the_users_session_history(self):
-        self.assertIn("--no-session", self.review.omp_harness("model-under-test").argv)
+        self.assertIn("--no-session", self.review.omp_harness(self.review.Reviewer("omp", "model-under-test")).argv)
 
     def test_no_harness_bypasses_configured_permissions(self):
         for family, builder in self.review.HARNESSES.items():
             with self.subTest(harness=family):
-                argv = builder("model-under-test").argv
+                argv = builder(self.review.Reviewer(family, "model-under-test")).argv
                 dangerous = [
                     argument
                     for argument in argv
