@@ -84,6 +84,67 @@ class SchemaTest(unittest.TestCase):
             self.assertEqual(len(rows(path)), 1)
 
 
+class AdviceSchemaTest(SpawnTestCase):
+    def assert_advice_tables(self, connection):
+        self.assertEqual(
+            [row[1] for row in connection.execute("PRAGMA table_info(advice)")],
+            ["id", "run_id", "ts", "project", "author", "advisor", "harness",
+             "effort", "question", "context", "cwd", "branch", "git_sha",
+             "recommendation", "answer_text", "duration_s", "status", "cost_usd"],
+        )
+        self.assertEqual(
+            [row[1] for row in connection.execute("PRAGMA table_info(advice_decisions)")],
+            ["run_id", "ts", "decision"],
+        )
+        for table in ("advice", "advice_decisions"):
+            self.assertEqual(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+
+    def test_fresh_database_has_all_three_tables(self):
+        connection = self.review.open_database(self.db_path)
+        self.addCleanup(connection.close)
+        self.assert_advice_tables(connection)
+        self.assertTrue(connection.execute("PRAGMA table_info(reviews)").fetchall())
+
+    def test_v4_review_rows_survive_migration(self):
+        connection = sqlite3.connect(self.db_path)
+        connection.execute(self.review.REVIEWS_TABLE)
+        connection.execute(
+            "INSERT INTO reviews (run_id, ts, project, author, reviewer, harness, goal, description, cwd, status, effort) "
+            "VALUES ('old', 't', 'p', 'a', 'v', 'h', 'g', 'd', 'c', 'ok', 'high')"
+        )
+        connection.execute("PRAGMA user_version=4")
+        connection.commit()
+        connection.close()
+        connection = self.review.open_database(self.db_path)
+        self.addCleanup(connection.close)
+        self.assert_advice_tables(connection)
+        self.assertEqual(connection.execute("SELECT run_id, effort FROM reviews").fetchall(), [("old", "high")])
+
+    def test_v3_migrates_through_both_versions(self):
+        connection = sqlite3.connect(self.db_path)
+        connection.execute(V1_SCHEMA)
+        connection.execute("ALTER TABLE reviews ADD COLUMN project TEXT")
+        connection.execute("ALTER TABLE reviews ADD COLUMN goal TEXT")
+        connection.execute("PRAGMA user_version=3")
+        connection.close()
+        connection = self.review.open_database(self.db_path)
+        self.addCleanup(connection.close)
+        self.assert_advice_tables(connection)
+        self.assertIn("effort", [row[1] for row in connection.execute("PRAGMA table_info(reviews)")])
+
+    def test_v6_is_refused_without_changing_its_stamp(self):
+        connection = sqlite3.connect(self.db_path)
+        connection.execute("PRAGMA user_version=6")
+        connection.close()
+        with contextlib.redirect_stderr(io.StringIO()) as warning:
+            self.assertIsNone(self.review.open_database(self.db_path))
+        self.assertIn("schema version 6", warning.getvalue())
+        connection = sqlite3.connect(self.db_path)
+        self.addCleanup(connection.close)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
+
+
 V1_SCHEMA = """
 CREATE TABLE reviews (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

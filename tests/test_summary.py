@@ -306,6 +306,17 @@ class SummaryTest(unittest.TestCase):
 
 
 class EffortSummaryIntegrationTest(SpawnTestCase):
+    def test_summary_reads_reviews_from_a_v5_ledger(self):
+        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=reply("A"))
+        run_main(self.review, "gpt-6", PROJECT, GOAL, "the branch")
+        summary = summary_module.load()
+        connection = summary.open_database(self.db_path)
+        self.addCleanup(connection.close)
+        self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+        records = summary.load_rows(connection)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["grade"], "A")
+
     def test_collected_efforts_are_recorded_and_reported_separately(self):
         self.route_to(
             self.fake_reviewer._replace(effort="low"),

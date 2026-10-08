@@ -197,7 +197,7 @@ CONFIG_ENV_VAR = "CROSS_AGENT_REVIEW_CONFIG"
 ACTIVE_ENV_VAR = "REVIEW_ACTIVE"
 TIMEOUT_ENV_VAR = "REVIEW_TIMEOUT"
 DB_ENV_VAR = "REVIEW_DB"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 BUSY_TIMEOUT_SECONDS = 5
 # A reviewer is a real agent reading real code, and the slower harnesses spend
 # several minutes on a substantial diff. This must also stay below the calling
@@ -242,7 +242,38 @@ CREATE TABLE IF NOT EXISTS reviews (
 )
 """
 
-SCHEMA = (REVIEWS_TABLE,)
+ADVICE_TABLE = """
+CREATE TABLE IF NOT EXISTS advice (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    project TEXT NOT NULL,
+    author TEXT NOT NULL,
+    advisor TEXT NOT NULL,
+    harness TEXT NOT NULL,
+    effort TEXT,
+    question TEXT NOT NULL,
+    context TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    branch TEXT,
+    git_sha TEXT,
+    recommendation TEXT,
+    answer_text TEXT,
+    duration_s REAL,
+    status TEXT NOT NULL,
+    cost_usd REAL
+)
+"""
+
+ADVICE_DECISIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS advice_decisions (
+    run_id TEXT PRIMARY KEY,
+    ts TEXT NOT NULL,
+    decision TEXT NOT NULL
+)
+"""
+
+SCHEMA = (REVIEWS_TABLE, ADVICE_TABLE, ADVICE_DECISIONS_TABLE)
 
 # Applied in order to bring an older database up to SCHEMA_VERSION. Rows
 # recorded before a column existed keep a NULL for it.
@@ -250,6 +281,7 @@ MIGRATIONS = {
     2: ("ALTER TABLE reviews ADD COLUMN project TEXT",),
     3: ("ALTER TABLE reviews ADD COLUMN goal TEXT",),
     4: ("ALTER TABLE reviews ADD COLUMN effort TEXT",),
+    5: (ADVICE_TABLE, ADVICE_DECISIONS_TABLE),
 }
 
 
