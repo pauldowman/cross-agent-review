@@ -20,7 +20,7 @@ Use the other sections to qualify the result:
 
 - Reviewer tendencies show raw grading severity and operational reliability. They do not prove that one reviewer is better or harsher because reviewers may see different authors, projects, and tasks.
 - Reviewer agreement compares grades from the same invocation. Investigate large spreads before trusting an overall mean.
-- Exact, versioned author and reviewer names remain separate, as do different harnesses running the same reviewer. Do not silently merge model versions or aliases.
+- Exact, versioned author and reviewer names remain separate, as do different harnesses or reasoning efforts running the same reviewer. Do not silently merge model versions or aliases.
 - Treat small samples as anecdotal. Avoid rankings or claims of trends unless each comparison has enough observations across comparable work.
 
 When useful, suggest a project or time filter for a more comparable follow-up. Do not expose full review text unless the user asks for qualitative analysis of it.

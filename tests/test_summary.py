@@ -9,6 +9,8 @@ import unittest
 from unittest import mock
 
 import summary_module
+from test_grade import reply
+from test_spawn import GOAL, PROJECT, SpawnTestCase, run_main
 
 
 SCHEMA = """
@@ -22,7 +24,8 @@ CREATE TABLE reviews (
     grade TEXT,
     status TEXT NOT NULL,
     duration_s REAL,
-    cost_usd REAL
+    cost_usd REAL,
+    effort TEXT
 )
 """
 
@@ -49,10 +52,11 @@ class SummaryTest(unittest.TestCase):
         duration_s=10.0,
         cost_usd=None,
         harness="agent-cli",
+        effort=None,
     ):
         connection = sqlite3.connect(self.path)
         connection.execute(
-            "INSERT INTO reviews VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO reviews VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 ts,
@@ -64,6 +68,7 @@ class SummaryTest(unittest.TestCase):
                 status,
                 duration_s,
                 cost_usd,
+                effort,
             ),
         )
         connection.commit()
@@ -131,6 +136,56 @@ class SummaryTest(unittest.TestCase):
             [(item.name, item.mean) for item in stats],
             [("reviewer via first", 4.0), ("reviewer via second", 0.0)],
         )
+
+    def test_same_model_and_harness_at_different_efforts_stay_separate(self):
+        self.insert("one", "agent-a", "reviewer", "A", effort="high")
+        self.insert("one", "agent-a", "reviewer", "F", effort="low")
+
+        rows = self.rows()
+        stats = self.summary.group_stats(rows, self.summary.reviewer_identity, "author")
+
+        self.assertEqual(
+            [(item.name, item.mean, item.attempts) for item in stats],
+            [("reviewer (high) via agent-cli", 4.0, 1), ("reviewer (low) via agent-cli", 0.0, 1)],
+        )
+        authors = self.summary.group_stats(rows, "author", self.summary.reviewer_identity)
+        self.assertEqual(authors[0].counterparts, 2)
+        report = self.summary.build_report(rows, self.path)
+        for effort, mean, grade in (("high", "4.00/4", "A"), ("low", "0.00/4", "F")):
+            self.assertIn(f"reviewer ({effort}) via agent-cli | {mean}", report)
+            self.assertIn(f"agent-a | reviewer ({effort}) via agent-cli | {mean}", report)
+            self.assertIn(f"reviewer ({effort}) via agent-cli={grade}", report)
+
+    def test_null_effort_keeps_the_legacy_label_separate_from_known_effort(self):
+        self.insert("one", "agent-a", "reviewer", "A", effort=None)
+        self.insert("two", "agent-a", "reviewer", "F", effort="medium")
+
+        stats = self.summary.group_stats(self.rows(), self.summary.reviewer_identity, "author")
+
+        self.assertEqual(
+            [(item.name, item.mean) for item in stats],
+            [("reviewer via agent-cli", 4.0), ("reviewer (medium) via agent-cli", 0.0)],
+        )
+
+    def test_a_v3_database_without_effort_still_summarizes_read_only(self):
+        connection = sqlite3.connect(self.path)
+        connection.execute("DROP TABLE reviews")
+        connection.execute(SCHEMA.replace("cost_usd REAL,\n    effort TEXT", "cost_usd REAL"))
+        connection.execute(
+            "INSERT INTO reviews VALUES "
+            "('run', '2026-08-01T00:00:00+00:00', 'shop', 'agent-a', 'reviewer', 'cli', 'B', 'ok', 10, NULL)"
+        )
+        connection.execute("PRAGMA user_version=3")
+        connection.commit()
+        connection.close()
+        before = self.path.read_bytes()
+
+        rows = self.rows()
+        report = self.summary.build_report(rows, self.path)
+
+        self.assertIsNone(rows[0]["effort"])
+        self.assertIn("reviewer via cli | 3.00/4", report)
+        self.assertEqual(self.path.read_bytes(), before)
 
     def test_agreement_uses_only_reviewers_of_the_same_invocation(self):
         self.insert("one", "agent-a", "reviewer-1", "A")
@@ -248,6 +303,27 @@ class SummaryTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0)
         self.assertIn("Summarize grades", result.stdout)
+
+
+class EffortSummaryIntegrationTest(SpawnTestCase):
+    def test_collected_efforts_are_recorded_and_reported_separately(self):
+        self.route_to(
+            self.fake_reviewer._replace(effort="low"),
+            self.fake_reviewer._replace(effort="high"),
+        )
+        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=reply("B"))
+
+        code, _, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
+        self.assertEqual(code, self.review.EXIT_OK)
+        summary = summary_module.load()
+        connection = summary.open_database(self.db_path)
+        self.addCleanup(connection.close)
+        rows = summary.load_rows(connection)
+        report = summary.build_report(rows, self.db_path)
+
+        self.assertEqual({row["effort"] for row in rows}, {"low", "high"})
+        for effort in ("low", "high"):
+            self.assertIn(f"fake ({effort}) via plain | 3.00/4 | 1/1", report)
 
 
 if __name__ == "__main__":

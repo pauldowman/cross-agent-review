@@ -61,7 +61,7 @@ The calling agent's own command timeout has to be larger than `REVIEW_TIMEOUT`, 
 
 ## Summarizing review data
 
-The `cross-agent-review-summarize` skill reads the ledger without modifying it and reports author averages, grade distributions, reviewer tendencies, author-by-reviewer results, reviewer agreement, and collection failures. Means use the ordinal mapping `A=4`, `B=3`, `C=2`, `D=1`, `F=0`; the report always keeps the distribution and sample size beside the mean.
+The `cross-agent-review-summarize` skill reads the ledger without modifying it and reports author averages, grade distributions, reviewer tendencies, author-by-reviewer results, reviewer agreement, and collection failures. Different harnesses and reasoning efforts of the same reviewer stay separate. Historical reviews without recorded effort keep their original reviewer label. Means use the ordinal mapping `A=4`, `B=3`, `C=2`, `D=1`, `F=0`; the report always keeps the distribution and sample size beside the mean.
 
 ```
 python3 skills/cross-agent-review-summarize/scripts/cross-agent-review-summarize

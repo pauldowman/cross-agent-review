@@ -23,6 +23,7 @@ REPORT_COLUMNS = (
     "author",
     "reviewer",
     "harness",
+    "effort",
     "grade",
     "status",
     "duration_s",
@@ -131,7 +132,8 @@ def field(row, key):
 
 
 def reviewer_identity(row):
-    return f"{row['reviewer']} via {row['harness']}"
+    effort = f" ({row['effort']})" if row.get("effort") else ""
+    return f"{row['reviewer']}{effort} via {row['harness']}"
 
 
 def group_stats(rows, key, counterpart_key):
