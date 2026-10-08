@@ -4,6 +4,7 @@
 import argparse
 import concurrent.futures
 import contextlib
+import datetime
 import importlib.machinery
 import importlib.util
 import os
@@ -173,12 +174,39 @@ def build_parser():
     ask.add_argument("question", help="the decision and options being weighed")
     ask.add_argument("context", help="a pointer to files or changes the advisors should inspect")
     ask.add_argument("--dry-run", action="store_true", help="print each advisor's command")
+    decide = subcommands.add_parser("decide", help="record the decision made after an ask")
+    decide.add_argument("run_id", help="the run ID printed by ask")
+    decide.add_argument("decision", help="the choice and its reason; replaces any earlier decision")
     return parser
 
 
 def decision_hint(run_id):
     command = [sys.executable, str(pathlib.Path(__file__).resolve()), "decide", run_id, "<decision>"]
     print(f"Record your decision: {shlex.join(command)}", flush=True)
+
+
+def record_decision(review, run_id, decision):
+    connection = review.open_database(label=ADVICE_TOOL_NAME)
+    if connection is None:
+        return 1
+    try:
+        if connection.execute("SELECT 1 FROM advice WHERE run_id = ? LIMIT 1", (run_id,)).fetchone() is None:
+            print(f"{ADVICE_TOOL_NAME}: run_id {run_id!r} was never recorded", file=sys.stderr)
+            return review.EXIT_USAGE
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        connection.execute(
+            "INSERT INTO advice_decisions (run_id, ts, decision) VALUES (?, ?, ?) "
+            "ON CONFLICT(run_id) DO UPDATE SET ts = excluded.ts, decision = excluded.decision",
+            (run_id, timestamp, decision),
+        )
+        connection.commit()
+    except (sqlite3.Error, OSError) as error:
+        print(f"{ADVICE_TOOL_NAME}: could not record decision for {run_id}: {error}", file=sys.stderr)
+        return 1
+    finally:
+        connection.close()
+    print(f"{ADVICE_TOOL_NAME}: recorded decision for {run_id}", flush=True)
+    return review.EXIT_OK
 
 
 def main(argv=None, review_tool=None):
@@ -192,6 +220,10 @@ def main(argv=None, review_tool=None):
         return review.EXIT_RECURSION
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "decide":
+        if not args.run_id.strip() or not args.decision.strip():
+            parser.error("run_id and decision must not be empty")
+        return record_decision(review, args.run_id.strip(), args.decision)
     for name in ("author", "project", "question", "context"):
         if not getattr(args, name).strip():
             parser.error(f"{name} must not be empty")

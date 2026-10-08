@@ -264,7 +264,117 @@ class AdviceRecordingTest(AdviceTestCase):
         self.assertEqual(self.records(), [])
 
 
+class AdviceDecisionTest(AdviceTestCase):
+    def recorded_run_id(self):
+        code, out, err = self.ask()
+        self.assertEqual(code, 0, err)
+        return re.search(r"\[(\w+)\]:", out).group(1)
+
+    def decisions(self):
+        connection = sqlite3.connect(self.db_path)
+        try:
+            return connection.execute("SELECT run_id, ts, decision FROM advice_decisions").fetchall()
+        finally:
+            connection.close()
+
+    def decide(self, run_id, decision):
+        return run_main(self.advice, "decide", run_id, decision)
+
+    def test_decision_is_committed_with_timestamp(self):
+        run_id = self.recorded_run_id()
+        decision = "Reuse the runner because cleanup is already tested."
+        code, out, err = self.decide(run_id, decision)
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn(f"recorded decision for {run_id}", out)
+        [row] = self.decisions()
+        self.assertEqual((row[0], row[2]), (run_id, decision))
+        self.assertRegex(row[1], r"^\d{4}-\d\d-\d\dT.*\+00:00$")
+
+    def test_second_decision_replaces_the_first(self):
+        run_id = self.recorded_run_id()
+        self.decide(run_id, "Reuse the runner")
+        code, _, _ = self.decide(run_id, "Build a runner after checking the constraints")
+        self.assertEqual(code, 0)
+        [row] = self.decisions()
+        self.assertEqual(row[2], "Build a runner after checking the constraints")
+
+    def test_unknown_run_id_is_a_usage_error_and_writes_nothing(self):
+        self.recorded_run_id()
+        code, out, err = self.decide("typo", "Reuse")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("run_id 'typo' was never recorded", err)
+        self.assertEqual(self.decisions(), [])
+
+    def test_empty_decision_is_a_usage_error(self):
+        for decision in ("", "  "):
+            with self.subTest(decision=decision):
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    with self.assertRaises(SystemExit) as raised:
+                        self.advice.main(["decide", "run", decision])
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn("must not be empty", err.getvalue())
+        self.assertFalse(self.db_path.exists())
+
+    def test_unopenable_database_exits_one_without_confirmation(self):
+        blocker = self.tempdir / "file"
+        blocker.write_text("blocker")
+        self.set_env(REVIEW_DB=str(blocker / "ledger.db"))
+        code, out, err = self.decide("run", "Reuse")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("not recording", err)
+        self.assertIn("file", err)
+
+    def test_failed_write_after_open_exits_one_without_confirmation(self):
+        run_id = self.recorded_run_id()
+        connection = self.review.open_database(self.db_path)
+        connection.execute("DROP TABLE advice_decisions")
+        with mock.patch.object(self.review, "open_database", return_value=connection):
+            code, out, err = self.decide(run_id, "Reuse")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("could not record decision", err)
+        self.assertIn("no such table", err)
+
+    def test_failed_commit_exits_one_and_rolls_back_without_confirmation(self):
+        run_id = self.recorded_run_id()
+        class FailedCommit(sqlite3.Connection):
+            def commit(self):
+                raise sqlite3.OperationalError("commit refused")
+        connection = sqlite3.connect(self.db_path, factory=FailedCommit)
+        with mock.patch.object(self.review, "open_database", return_value=connection):
+            code, out, err = self.decide(run_id, "Reuse")
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("commit refused", err)
+        self.assertEqual(self.decisions(), [])
+
+
 class AdviceCommandTest(AdviceTestCase):
+    def test_real_ask_then_decide_records_answers_and_decision(self):
+        executable = self.tempdir / "claude"
+        executable.write_text(
+            f"#!{sys.executable}\nimport json\nprint(json.dumps({{'result': {reply()!r}, 'is_error': False}}))\n"
+        )
+        executable.chmod(0o755)
+        config = self.tempdir / "reviewers.toml"
+        config.write_text('[[rule]]\npattern = "."\nreviewers = [{harness = "claude", model = "fake", effort = "high"}]\n')
+        environment = dict(os.environ, TMPDIR=str(self.tempdir), PATH=f"{self.tempdir}:{os.environ['PATH']}", CROSS_AGENT_REVIEW_CONFIG=str(config))
+        asked = subprocess.run(
+            [sys.executable, str(advice_module.SCRIPT), "ask", "gpt-6", PROJECT, QUESTION, CONTEXT],
+            capture_output=True, text=True, env=environment,
+        )
+        self.assertEqual(asked.returncode, 0, asked.stderr)
+        [path] = advice_paths(asked.stdout)
+        self.assertIn(ANSWER, path.read_text())
+        run_id = re.search(r"\[(\w+)\]:", asked.stdout).group(1)
+        decided = subprocess.run(
+            [sys.executable, str(advice_module.SCRIPT), "decide", run_id, "Reuse the runner"],
+            capture_output=True, text=True, env=environment,
+        )
+        self.assertEqual(decided.returncode, 0, decided.stderr)
+        connection = sqlite3.connect(self.db_path)
+        self.addCleanup(connection.close)
+        self.assertEqual(connection.execute("SELECT effort, recommendation FROM advice").fetchall(), [("high", "Reuse the runner")])
+        self.assertEqual(connection.execute("SELECT run_id, decision FROM advice_decisions").fetchall(), [(run_id, "Reuse the runner")])
+
     def test_fixture_dry_run_labels_commands_and_harness_effort_flags(self):
         for author in ("gpt-6", "claude-opus-5"):
             result = subprocess.run(
@@ -286,7 +396,7 @@ class AdviceCommandTest(AdviceTestCase):
         config = self.tempdir / "reviewers.toml"
         config.write_text('[[rule]]\npattern = "."\nreviewers = [{harness = "opencode", model = "fake", effort = "medium"}]\n')
         pidfile = self.tempdir / "grandchild.pid"
-        environment = dict(os.environ, PATH=f"{self.tempdir}:{os.environ['PATH']}", CROSS_AGENT_REVIEW_CONFIG=str(config), FAKE_HARNESS_MODE="hang", FAKE_HARNESS_PIDFILE=str(pidfile))
+        environment = dict(os.environ, TMPDIR=str(self.tempdir), PATH=f"{self.tempdir}:{os.environ['PATH']}", CROSS_AGENT_REVIEW_CONFIG=str(config), FAKE_HARNESS_MODE="hang", FAKE_HARNESS_PIDFILE=str(pidfile))
         process = subprocess.Popen(
             [sys.executable, str(advice_module.SCRIPT), "ask", "gpt-6", PROJECT, QUESTION, CONTEXT],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=environment,
