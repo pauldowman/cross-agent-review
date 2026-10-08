@@ -63,4 +63,4 @@ python3 scripts/cross-agent-advice decide a3f1c92b "Put retries in the job runne
 
 `ask` prints the command to use. Replace its `<decision>` placeholder with your choice and reason. Running `decide` again replaces the earlier decision for that run.
 
-If recording advisor runs fails, answers are still delivered, but stderr warns and the decision command is omitted. Report that the decision cannot be recorded for this run. `decide` exits `2` for an unknown run ID or empty decision, and `1` for a database or write failure. A confirmation is printed only after a successful commit.
+If recording advisor runs fails, answers are still delivered, but stderr warns and the decision command is omitted. Report the incomplete recording; `decide` can only save a decision when at least one advisor row exists for the run ID. `decide` exits `2` for an unknown run ID or empty decision, and `1` for a database or write failure. A confirmation is printed only after a successful commit.

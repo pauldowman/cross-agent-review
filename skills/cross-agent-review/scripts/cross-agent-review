@@ -882,7 +882,7 @@ def run_harness(reviewer, prompt, timeout, output_path, parse=parse_review, labe
             "",
             join_notices(
                 f"timed out after {timeout}s "
-                f"(this is the per-agent timeout; raise {TIMEOUT_ENV_VAR} "
+                f"(this is the {label} per-agent timeout; raise {TIMEOUT_ENV_VAR} "
                 f"to allow longer)",
                 partial,
             ),

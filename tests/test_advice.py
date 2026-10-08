@@ -146,7 +146,9 @@ class AskAdviceTest(AdviceTestCase):
                 code, out, err = self.ask()
                 self.assertEqual(code, 0)
                 self.assertIn(status, out)
-                self.assertIn(ANSWER, advice_paths(out)[0].read_text())
+                text = advice_paths(out)[0].read_text()
+                self.assertIn(ANSWER, text)
+                self.assertNotIn("Recommendation: None", text)
                 self.assertIn(notice, err)
 
     def test_answer_is_printed_when_saving_fails(self):
@@ -238,6 +240,7 @@ class AdviceRecordingTest(AdviceTestCase):
         self.assertTrue(all(row["answer_text"] is None for row in records))
         self.assertTrue(all(row["recommendation"] is None for row in records))
         self.assertIn("cross-agent-advice: slow", err)
+        self.assertIn("cross-agent-advice per-agent timeout", err)
         self.assertIn("per-agent timeout", err)
 
     def test_unopenable_database_delivers_answers_but_omits_decide_hint(self):
@@ -248,7 +251,7 @@ class AdviceRecordingTest(AdviceTestCase):
         self.assertEqual(code, 0)
         self.assertIn(ANSWER, advice_paths(out)[0].read_text())
         self.assertIn("cross-agent-advice: not recording", err)
-        self.assertIn("decision can't be recorded", err)
+        self.assertIn("advisor recording was incomplete", err)
         self.assertNotIn("Record your decision:", out)
 
     def test_failed_insert_delivers_answers_but_omits_decide_hint(self):
@@ -259,9 +262,31 @@ class AdviceRecordingTest(AdviceTestCase):
         self.assertEqual(code, 0)
         self.assertIn(ANSWER, advice_paths(out)[0].read_text())
         self.assertIn("could not record", err)
-        self.assertIn("decision can't be recorded", err)
+        self.assertIn("advisor recording was incomplete", err)
         self.assertNotIn("Record your decision:", out)
         self.assertEqual(self.records(), [])
+
+    def test_partial_recording_omits_hint_but_saved_run_can_have_a_decision(self):
+        self.route_to(self.fake_reviewer._replace(effort="low"), self.fake_reviewer._replace(effort="high"))
+        insert = self.advice.insert_advice_run
+        calls = 0
+        def fail_once(connection, invocation, run):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise sqlite3.OperationalError("one insert failed")
+            insert(connection, invocation, run)
+        with mock.patch.object(self.advice, "insert_advice_run", side_effect=fail_once):
+            code, out, err = self.ask()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(advice_paths(out)), 2)
+        [row] = self.records()
+        self.assertNotIn("Record your decision:", out)
+        self.assertIn("advisor recording was incomplete", err)
+        self.assertIn("at least one advisor row was saved", err)
+        self.assertNotIn("decision can't be recorded", err)
+        code, _, err = run_main(self.advice, "decide", row["run_id"], "Reuse with partial advice")
+        self.assertEqual((code, err), (0, ""))
 
 
 class AdviceDecisionTest(AdviceTestCase):
