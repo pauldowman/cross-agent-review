@@ -10,6 +10,7 @@ import os
 import pathlib
 import re
 import shlex
+import sqlite3
 import sys
 
 ADVICE_TOOL_NAME = "cross-agent-advice"
@@ -113,8 +114,10 @@ def deliver_advice(review, run, nonce, directory):
 
 
 def advice_all(review, advisors, prompt, timeout, invocation):
+    connection = review.open_database(label=ADVICE_TOOL_NAME)
     directory = review.make_review_directory(invocation.run_id, prefix=ADVICE_TOOL_NAME)
     delivered = 0
+    recorded = connection is not None
     try:
         with concurrent.futures.ThreadPoolExecutor(len(advisors)) as pool:
             pending = {
@@ -124,13 +127,41 @@ def advice_all(review, advisors, prompt, timeout, invocation):
             }
             for future in concurrent.futures.as_completed(pending):
                 run = review.collect(future, pending[future], label=ADVICE_TOOL_NAME)
+                if not record_advice_run(review, connection, invocation, run):
+                    recorded = False
                 if deliver_advice(review, run, invocation.run_id, directory):
                     delivered += 1
     finally:
+        if connection is not None:
+            connection.close()
         if directory is not None:
             with contextlib.suppress(OSError):
                 directory.rmdir()
-    return delivered
+    return delivered, recorded
+
+
+def insert_advice_run(connection, invocation, run):
+    with connection:
+        connection.execute(
+            "INSERT INTO advice (run_id, ts, project, author, advisor, harness, effort,"
+            " question, context, cwd, branch, git_sha, recommendation, answer_text,"
+            " duration_s, status, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (invocation.run_id, invocation.ts, invocation.project, invocation.author,
+             run.reviewer, run.family, run.effort, invocation.goal, invocation.description,
+             invocation.cwd, invocation.branch, invocation.git_sha, run.verdict,
+             run.text or None, run.duration_s, run.status, run.cost_usd),
+        )
+
+
+def record_advice_run(review, connection, invocation, run):
+    if connection is None:
+        return False
+    try:
+        insert_advice_run(connection, invocation, run)
+    except (sqlite3.Error, OSError) as error:
+        print(f"{ADVICE_TOOL_NAME}: could not record {review.run_label(run)}: {error}", file=sys.stderr)
+        return False
+    return True
 
 
 def build_parser():
@@ -178,13 +209,17 @@ def main(argv=None, review_tool=None):
             print(f"{review.reviewer_label(advisor)}: {shlex.join(command)}")
         return review.EXIT_OK
     invocation = review.describe_invocation(args.project, args.author.strip(), args.question, args.context)
-    delivered = advice_all(review, advisors, prompt, timeout, invocation)
+    delivered, recorded = advice_all(review, advisors, prompt, timeout, invocation)
+    if not recorded:
+        print(f"{ADVICE_TOOL_NAME}: the decision can't be recorded for this run ({invocation.run_id}) "
+              "because recording the advisor runs failed", file=sys.stderr)
     if not delivered:
         print(f"{ADVICE_TOOL_NAME}: no advisors answered", file=sys.stderr)
         return review.EXIT_ALL_FAILED
     if delivered < len(advisors):
         print(f"{ADVICE_TOOL_NAME}: {delivered} of {len(advisors)} advisors answered", file=sys.stderr)
-    decision_hint(invocation.run_id)
+    if recorded:
+        decision_hint(invocation.run_id)
     return review.EXIT_OK
 
 

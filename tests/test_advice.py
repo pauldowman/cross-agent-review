@@ -5,6 +5,7 @@ import pathlib
 import re
 import shlex
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -164,6 +165,103 @@ class AskAdviceTest(AdviceTestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(advice_paths(out)), 2)
         self.assertLess(time.monotonic() - start, 2.25)
+
+
+class AdviceRecordingTest(AdviceTestCase):
+    def records(self):
+        connection = sqlite3.connect(self.db_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            return [dict(row) for row in connection.execute("SELECT * FROM advice ORDER BY id")]
+        finally:
+            connection.close()
+
+    def test_insert_stores_effort_and_all_invocation_and_run_fields(self):
+        connection = self.review.open_database(self.db_path)
+        self.addCleanup(connection.close)
+        invocation = self.review.Invocation("run", "timestamp", PROJECT, "gpt-6", QUESTION, CONTEXT, "/cwd", "main", "sha")
+        run = self.review.ReviewerRun("advisor", "plain", "ok", ANSWER, "", "", 2.5,
+                                      verdict="Reuse", effort="high", cost_usd=0.25)
+        self.advice.insert_advice_run(connection, invocation, run)
+        [row] = self.records()
+        expected = dict(run_id="run", ts="timestamp", project=PROJECT, author="gpt-6", advisor="advisor",
+                        harness="plain", effort="high", question=QUESTION, context=CONTEXT, cwd="/cwd",
+                        branch="main", git_sha="sha", recommendation="Reuse", answer_text=ANSWER,
+                        duration_s=2.5, status="ok", cost_usd=0.25)
+        self.assertEqual({key: row[key] for key in expected}, expected)
+
+    def test_ask_records_each_answer_with_shared_run_id_and_effort(self):
+        for name in ("alpha", "beta"):
+            self.static_harness(name, reply(name))
+        self.use_reviewers("alpha", "beta")
+        code, out, _ = self.ask()
+        self.assertEqual(code, 0)
+        records = self.records()
+        self.assertEqual(len(records), 2)
+        self.assertEqual(len({row["run_id"] for row in records}), 1)
+        self.assertEqual({row["advisor"] for row in records}, {"alpha", "beta"})
+        for row in records:
+            self.assertEqual(row["recommendation"], row["advisor"])
+            self.assertEqual(row["effort"], "medium")
+            self.assertEqual(row["answer_text"], ANSWER)
+            self.assertEqual(row["status"], "ok")
+            self.assertIn(f"decide {row['run_id']}", out)
+
+    def test_a_crash_in_collect_still_records_effort(self):
+        advisor = self.install_harness("crashes", "plain", ("/bin/sh", "-c", "true"))._replace(effort="high")
+        self.route_to(advisor)
+        code, _, err = self.ask()
+        self.assertEqual(code, 3)
+        [row] = self.records()
+        self.assertEqual((row["status"], row["effort"]), ("harness_error", "high"))
+        self.assertIsNone(row["answer_text"])
+        self.assertIn("cross-agent-advice", err)
+        self.assertNotIn("cross-agent-review:", err)
+
+    def test_same_model_and_harness_at_two_efforts_make_distinct_rows(self):
+        self.route_to(self.fake_reviewer._replace(effort="low"), self.fake_reviewer._replace(effort="high"))
+        self.ask()
+        records = self.records()
+        self.assertEqual(len(records), 2)
+        self.assertEqual({row["effort"] for row in records}, {"low", "high"})
+        self.assertEqual({row["advisor"] for row in records}, {"fake"})
+
+    def test_failed_and_timed_out_runs_are_recorded_with_null_text(self):
+        self.broken_harness("missing")
+        self.install_harness("slow", "plain", ("/bin/sh", "-c", "sleep 300", self.review.PROMPT_PLACEHOLDER))
+        self.use_reviewers("missing", "slow")
+        self.set_env(REVIEW_TIMEOUT="1")
+        code, out, err = self.ask()
+        self.assertEqual((code, out), (3, ""))
+        records = self.records()
+        self.assertEqual({row["status"] for row in records}, {"harness_missing", "timeout"})
+        self.assertTrue(all(row["answer_text"] is None for row in records))
+        self.assertTrue(all(row["recommendation"] is None for row in records))
+        self.assertIn("cross-agent-advice: slow", err)
+        self.assertIn("per-agent timeout", err)
+
+    def test_unopenable_database_delivers_answers_but_omits_decide_hint(self):
+        blocker = self.tempdir / "file"
+        blocker.write_text("a file cannot contain a database")
+        self.set_env(REVIEW_DB=str(blocker / "advice.db"))
+        code, out, err = self.ask()
+        self.assertEqual(code, 0)
+        self.assertIn(ANSWER, advice_paths(out)[0].read_text())
+        self.assertIn("cross-agent-advice: not recording", err)
+        self.assertIn("decision can't be recorded", err)
+        self.assertNotIn("Record your decision:", out)
+
+    def test_failed_insert_delivers_answers_but_omits_decide_hint(self):
+        connection = self.review.open_database(self.db_path)
+        connection.execute("CREATE TRIGGER refuse_advice BEFORE INSERT ON advice BEGIN SELECT RAISE(ABORT, 'refused'); END")
+        connection.close()
+        code, out, err = self.ask()
+        self.assertEqual(code, 0)
+        self.assertIn(ANSWER, advice_paths(out)[0].read_text())
+        self.assertIn("could not record", err)
+        self.assertIn("decision can't be recorded", err)
+        self.assertNotIn("Record your decision:", out)
+        self.assertEqual(self.records(), [])
 
 
 class AdviceCommandTest(AdviceTestCase):
