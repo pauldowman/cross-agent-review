@@ -159,6 +159,42 @@ class MigrationTest(SpawnTestCase):
         self.assertEqual(len(rows(self.db_path)), 1)
 
 
+class EffortMigrationTest(SpawnTestCase):
+    def test_v3_rows_keep_null_effort_and_new_rows_record_effort(self):
+        connection = sqlite3.connect(self.db_path)
+        connection.execute(V1_SCHEMA)
+        connection.execute("ALTER TABLE reviews ADD COLUMN project TEXT")
+        connection.execute("ALTER TABLE reviews ADD COLUMN goal TEXT")
+        connection.execute(
+            "INSERT INTO reviews (run_id, ts, author, reviewer, harness,"
+            " description, cwd, status, grade, project, goal)"
+            " VALUES ('old', '2026-08-23T00:00:00+00:00', 'author', 'reviewer',"
+            " 'plain', 'the branch', '/somewhere', 'ok', 'B', 'project', 'goal')"
+        )
+        connection.execute("PRAGMA user_version=3")
+        connection.commit()
+        connection.close()
+        self.route_to(self.fake_reviewer._replace(effort="high"))
+        self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=reply("A"))
+
+        code, _, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
+
+        self.assertEqual(code, self.review.EXIT_OK)
+        old, new = rows(self.db_path)
+        self.assertIsNone(old["effort"])
+        self.assertEqual(old["grade"], "B")
+        self.assertEqual(old["project"], "project")
+        self.assertEqual(old["goal"], "goal")
+        self.assertEqual(new["effort"], "high")
+        self.assertEqual(new["grade"], "A")
+        connection = sqlite3.connect(self.db_path)
+        self.addCleanup(connection.close)
+        self.assertEqual(
+            connection.execute("PRAGMA user_version").fetchone()[0],
+            self.review.SCHEMA_VERSION,
+        )
+
+
 class ProjectTest(SpawnTestCase):
     def test_the_project_is_recorded(self):
         self.set_env(FAKE_HARNESS_MODE="echo", FAKE_HARNESS_OUTPUT=reply("B"))
@@ -295,6 +331,28 @@ class RecordedRunTest(SpawnTestCase):
         self.assertTrue(row["run_id"])
         self.assertTrue(row["ts"])
         self.assertIsNotNone(row["duration_s"])
+
+    def test_a_fresh_database_records_the_configured_effort(self):
+        self.route_to(self.fake_reviewer._replace(effort="low"))
+        self.echo(reply("A"))
+
+        code, _, _ = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
+
+        self.assertEqual(code, self.review.EXIT_OK)
+        (row,) = rows(self.db_path)
+        self.assertEqual(row["effort"], "low")
+
+    def test_a_reviewer_that_crashes_in_collect_still_records_its_effort(self):
+        reviewer = self.install_harness("broken", "plain", ("/bin/sh", "-c", "true"))
+        self.route_to(reviewer._replace(effort="high"))
+
+        code, _, err = run_main(self.review, "gpt-5.6", PROJECT, GOAL, "the branch")
+
+        self.assertEqual(code, self.review.EXIT_ALL_FAILED)
+        self.assertIn("broken (high) via plain could not be run", err)
+        (row,) = rows(self.db_path)
+        self.assertEqual(row["effort"], "high")
+        self.assertEqual(row["status"], self.review.STATUS_HARNESS_ERROR)
 
     def test_the_repository_position_is_recorded(self):
         self.echo(reply("A"))

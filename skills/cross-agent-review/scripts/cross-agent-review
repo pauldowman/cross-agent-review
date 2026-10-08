@@ -197,7 +197,7 @@ CONFIG_ENV_VAR = "CROSS_AGENT_REVIEW_CONFIG"
 ACTIVE_ENV_VAR = "REVIEW_ACTIVE"
 TIMEOUT_ENV_VAR = "REVIEW_TIMEOUT"
 DB_ENV_VAR = "REVIEW_DB"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 BUSY_TIMEOUT_SECONDS = 5
 # A reviewer is a real agent reading real code, and the slower harnesses spend
 # several minutes on a substantial diff. This must also stay below the calling
@@ -237,7 +237,8 @@ CREATE TABLE IF NOT EXISTS reviews (
     review_text TEXT,
     duration_s REAL,
     status TEXT NOT NULL,
-    cost_usd REAL
+    cost_usd REAL,
+    effort TEXT
 )
 """
 
@@ -246,6 +247,7 @@ CREATE TABLE IF NOT EXISTS reviews (
 MIGRATIONS = {
     2: ("ALTER TABLE reviews ADD COLUMN project TEXT",),
     3: ("ALTER TABLE reviews ADD COLUMN goal TEXT",),
+    4: ("ALTER TABLE reviews ADD COLUMN effort TEXT",),
 }
 
 
@@ -1171,8 +1173,8 @@ def insert_run(connection, invocation, run):
     connection.execute(
         "INSERT INTO reviews (run_id, ts, project, author, reviewer, harness,"
         " goal, description, cwd, branch, git_sha, grade, review_text,"
-        " duration_s, status, cost_usd)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " duration_s, status, cost_usd, effort)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             invocation.run_id,
             invocation.ts,
@@ -1190,6 +1192,7 @@ def insert_run(connection, invocation, run):
             run.duration_s,
             run.status,
             run.cost_usd,
+            run.effort,
         ),
     )
     connection.commit()
